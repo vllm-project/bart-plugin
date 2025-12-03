@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-bart-plugin"
+version = "0.1.0"
+description = "BART model plugin for vLLM"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Nicolò Lucchesi", email = "nick.lucche@redhat.com"}
+]
+keywords = ["vllm", "bart", "language-model", "inference", "plugin"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "vllm>=0.12.0",
+    "torch>=2.9.0",
+    "transformers>=4.56.0,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black>=22.0",
+    "isort>=5.0",
+    "mypy>=0.950",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/bart-plugin"
+Repository = "https://github.com/yourusername/bart-plugin"
+Documentation = "https://github.com/yourusername/bart-plugin#readme"
+
+[project.entry-points."vllm.plugins"]
+bart = "vllm_bart_plugin:register_bart_model"
+
+[tool.setuptools]
+packages = ["vllm_bart_plugin"]
+
+[tool.setuptools.package-data]
+vllm_bart_plugin = ["py.typed"]
+
+[tool.black]
+line-length = 88
+target-version = ['py310', 'py311', 'py312']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

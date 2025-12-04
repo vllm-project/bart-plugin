@@ -112,7 +112,7 @@ def test_model_registration():
         from vllm.model_executor.models.registry import ModelRegistry
 
         # Try to get the model class
-        model_cls = ModelRegistry._get_model("BartForConditionalGeneration")
+        model_cls = ModelRegistry.models["BartForConditionalGeneration"]
         print(f"✓ Model registered successfully: {model_cls}")
         return True
 

@@ -5,7 +5,7 @@ Example usage of the vLLM BART plugin.
 This script demonstrates how to use BART models with vLLM
 after installing the BART plugin.
 """
-
+import vllm_bart_plugin
 from vllm import LLM, SamplingParams
 
 

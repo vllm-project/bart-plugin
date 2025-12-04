@@ -44,7 +44,7 @@ Homepage = "https://github.com/yourusername/bart-plugin"
 Repository = "https://github.com/yourusername/bart-plugin"
 Documentation = "https://github.com/yourusername/bart-plugin#readme"
 
-[project.entry-points."vllm.plugins"]
+[project.entry-points."vllm.general_plugins"]
 bart = "vllm_bart_plugin:register_bart_model"
 
 [tool.setuptools]

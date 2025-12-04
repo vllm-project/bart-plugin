@@ -29,7 +29,7 @@ from torch import nn
 from transformers import BartConfig
 from transformers.utils import logging
 
-from vllm.attention import Attention, AttentionType
+from vllm.attention.layer import Attention, AttentionType
 from vllm.attention.layer import MultiHeadAttention
 from vllm.attention.layers.cross_attention import CrossAttention
 from vllm.config import CacheConfig, VllmConfig
@@ -71,8 +71,8 @@ from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 
-from .interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsQuant
-from .utils import AutoWeightsLoader, WeightsMapper, cast_overflow_tensors, maybe_prefix
+from vllm.model_executor.models.interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsQuant
+from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper, cast_overflow_tensors, maybe_prefix
 
 logger = logging.get_logger(__name__)
 

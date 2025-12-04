@@ -16,7 +16,7 @@ setup(
         "transformers >= 4.56.0, < 5",
     ],
     entry_points={
-        "vllm.plugins": [
+        "vllm.general_plugins": [
             "bart=vllm_bart_plugin:register_bart_model",
         ],
     },

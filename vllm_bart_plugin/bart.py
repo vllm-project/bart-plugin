@@ -653,7 +653,6 @@ class BartEncoder(nn.Module):
             Decoder output torch.Tensor
         """
         # retrieve input_ids and inputs_embeds
-        print("BART ENCODER INPUT_IDS", input_ids, "\n")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
@@ -665,12 +664,6 @@ class BartEncoder(nn.Module):
 
         for encoder_layer in self.layers:
             hidden_states = encoder_layer(hidden_states=hidden_states)
-        print(
-            "BART ENCODER LAST HIDDEN STATES",
-            hidden_states.mean(),
-            hidden_states.std(),
-            "\n",
-        )
         return hidden_states
 
 
@@ -747,7 +740,6 @@ class BartDecoder(nn.Module):
         Returns:
             Decoder output torch.Tensor
         """
-        print("BART DECODER INPUT_IDS", decoder_input_ids, "\n")
         if inputs_embeds is None:
             assert decoder_input_ids is not None
             inputs_embeds = self.get_input_embeddings(decoder_input_ids)
@@ -765,12 +757,6 @@ class BartDecoder(nn.Module):
                 decoder_hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
             )
-        print(
-            "BART DECODER LAST HIDDEN STATES",
-            hidden_states.mean(),
-            hidden_states.std(),
-            "\n",
-        )
         return hidden_states
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
@@ -1181,8 +1167,6 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
                 input_ids=encoder_input_ids,
                 positions=encoder_positions,
             )
-            print("Encoder output shape:", encoder_output.shape, "\n")
-            print("Encoder output:", encoder_output.mean(), encoder_output.std(), "\n")
             encoder_outputs.append(encoder_output)
 
         return encoder_outputs
@@ -1246,13 +1230,7 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
         if encoder_outputs is not None:
             # Assume same shape for all encoder outputs
             encoder_outputs = torch.cat(encoder_outputs, dim=0)
-            print(
-                "BART FORWARD CALLED WITH encoder_outputs:", encoder_outputs.shape, "\n"
-            )
-        else:
-            print("BART FORWARD CALLED WITH encoder_outputs: None", "\n")
 
-        print("BART FWD INPUT IDS", input_ids)
         return self.model(
             input_ids, positions, inputs_embeds, encoder_outputs=encoder_outputs
         )

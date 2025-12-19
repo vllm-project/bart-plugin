@@ -170,38 +170,14 @@ bart-plugin/
 
 ```bash
 # Install development dependencies
-uv pip install -e ".[dev]"
+uv pip install -e .
 
 # Install pre-commit hooks
 pre-commit install
 
 # Run fast tests
-pytest -m "not slow"
-
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=vllm_bart_plugin --cov-report=html
+pytest -m tests/
 ```
-
-See [tests/README.md](tests/README.md) for detailed testing documentation.
-
-### Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
-
-Quick checklist:
-1. Install pre-commit hooks: `pre-commit install`
-2. Code follows style guidelines (enforced by pre-commit)
-3. All tests pass: `pytest`
-4. Documentation is updated for new features
-
-Pre-commit hooks will automatically:
-- Format code with ruff
-- Check types with mypy
-- Scan for security issues
-- Validate documentation style
 
 ## Troubleshooting
 

@@ -17,13 +17,12 @@ def main():
         model=model_name,
         tensor_parallel_size=1,
         enforce_eager=False,
-        # max_model_len=1024,
+        max_model_len=1024,
         max_num_seqs=4,
         max_num_batched_tokens=11024,
         gpu_memory_utilization=0.5,
         dtype="float16",
     )
-
     params = SamplingParams(temperature=0.0, max_tokens=20)
     outputs = llm.generate(
         [
@@ -57,7 +56,7 @@ def main():
                         "text": "<s>",
                     },
                 },
-                "decoder_prompt": "<s>Ronald McDonald is",
+                "decoder_prompt": "<s>The capital of France is",
             },
         ],
         sampling_params=params,
@@ -68,11 +67,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\nInterrupted by user.")
-    except Exception as e:
-        print(f"\n\nError: {e}")
-        import traceback
-        traceback.print_exc()
+    main()

@@ -49,12 +49,12 @@ class TestModelInitialization:
         from transformers import BartConfig
 
         # Create minimal config
-        hf_config = BartConfig.from_pretrained("facebook/bart-base")
+        hf_config = BartConfig.from_pretrained("facebook/bart-large-cnn")
 
         model_config = ModelConfig(
-            model="facebook/bart-base",
+            model="facebook/bart-large-cnn",
             task="generate",
-            tokenizer="facebook/bart-base",
+            tokenizer="facebook/bart-large-cnn",
             tokenizer_mode="auto",
             trust_remote_code=False,
             dtype="float16",
@@ -105,12 +105,12 @@ class TestModelInitialization:
         from vllm.config import VllmConfig, ModelConfig, CacheConfig, LoadConfig
         from transformers import BartConfig
 
-        hf_config = BartConfig.from_pretrained("facebook/bart-base")
+        hf_config = BartConfig.from_pretrained("facebook/bart-large-cnn")
 
         model_config = ModelConfig(
-            model="facebook/bart-base",
+            model="facebook/bart-large-cnn",
             task="generate",
-            tokenizer="facebook/bart-base",
+            tokenizer="facebook/bart-large-cnn",
             tokenizer_mode="auto",
             trust_remote_code=False,
             dtype="float16",

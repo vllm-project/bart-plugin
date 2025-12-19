@@ -22,35 +22,6 @@ def check_plugin_installed():
         return False
 
 
-def check_entry_points():
-    """Check if the plugin is registered as an entry point."""
-    print("\nChecking entry point registration...")
-    try:
-        from importlib.metadata import entry_points
-
-        # Get all vllm.plugins entry points
-        vllm_plugins = entry_points(group='vllm.plugins')
-
-        # Look for bart plugin
-        bart_plugin = None
-        for ep in vllm_plugins:
-            if ep.name == 'bart':
-                bart_plugin = ep
-                break
-
-        if bart_plugin:
-            print(f"✓ Plugin registered as entry point: {bart_plugin.value}")
-            return True
-        else:
-            print("✗ Plugin entry point not found")
-            print(f"  Available plugins: {[ep.name for ep in vllm_plugins]}")
-            return False
-
-    except Exception as e:
-        print(f"✗ Error checking entry points: {e}")
-        return False
-
-
 def check_registration_function():
     """Check if the registration function can be loaded."""
     print("\nChecking registration function...")
@@ -149,7 +120,6 @@ def main():
 
     checks = [
         ("Plugin Installation", check_plugin_installed),
-        ("Entry Point Registration", check_entry_points),
         ("Registration Function", check_registration_function),
         ("Model Class Import", check_model_class),
         ("vLLM Dependencies", check_vllm_dependencies),

@@ -17,12 +17,6 @@ def device():
 
 
 @pytest.fixture(scope="session")
-def small_model_name():
-    """Small BART model for quick tests."""
-    return "facebook/bart-base"
-
-
-@pytest.fixture(scope="session")
 def test_prompts():
     """Sample prompts for testing."""
     return [

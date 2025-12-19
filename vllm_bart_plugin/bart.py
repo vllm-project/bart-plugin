@@ -30,7 +30,7 @@ from transformers import BartConfig
 from transformers.utils import logging
 
 from vllm.attention.layer import Attention, AttentionType
-from vllm.attention.layer import MultiHeadAttention
+from vllm.attention.layers.mm_encoder_attention import MMEncoderAttention
 from vllm.attention.layers.cross_attention import CrossAttention
 from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
@@ -73,8 +73,26 @@ from vllm.utils.collection_utils import is_list_of
 
 from vllm.model_executor.models.interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsQuant
 from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper, cast_overflow_tensors, maybe_prefix
+import os
 
 logger = logging.get_logger(__name__)
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse a boolean-ish environment variable.
+
+    Accepted truthy: 1, true, yes, on
+    Accepted falsy: 0, false, no, off
+    """
+    val = os.getenv(name)
+    if val is None:
+        return default
+    val = val.strip().lower()
+    if val in ("1", "true", "yes", "on"):
+        return True
+    if val in ("0", "false", "no", "off"):
+        return False
+    logger.warning("Unrecognized value for %s=%r; using default=%s", name, val, default)
+    return default
 
 
 def get_bsz_seq_len(input_ids):
@@ -200,7 +218,7 @@ class BartEncoderAttention(nn.Module):
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
 
-        self.attn = MultiHeadAttention(
+        self.attn = MMEncoderAttention(
             self.num_heads,
             self.head_dim,
             self.scaling,
@@ -632,7 +650,6 @@ class BartEncoder(nn.Module):
                 for layer_idx in range(config.encoder_layers)
             ]
         )
-
         self.layernorm_embedding = nn.LayerNorm(embed_dim)
 
     def forward(
@@ -742,7 +759,7 @@ class BartDecoder(nn.Module):
         """
         if inputs_embeds is None:
             assert decoder_input_ids is not None
-            inputs_embeds = self.get_input_embeddings(decoder_input_ids)
+            inputs_embeds = self.embed_input_ids(decoder_input_ids)
 
         # embed positions
         embed_pos = self.embed_positions(decoder_positions)
@@ -759,7 +776,7 @@ class BartDecoder(nn.Module):
             )
         return hidden_states
 
-    def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
 
@@ -1128,13 +1145,27 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
         self.logits_processor = LogitsProcessor(
             self.unpadded_vocab_size, config.vocab_size
         )
+        # Optional optimization: run the encoder once over a padded batch of
+        # encoder_input_ids (instead of N sequential encoder forwards).
+        # Default is OFF to keep behavior stable unless explicitly enabled.
+        self._encoder_max_seq_padding = _env_flag(
+            "VLLM_BART_ENCODER_MAX_SEQ_PADDING", default=False
+        )
+        self._pad_id = getattr(self.config, "pad_token_id", None)
+        if self._encoder_max_seq_padding and self._pad_id is None:
+            logger.warning(
+                "Pad token id is not set; disabling VLLM_BART_ENCODER_MAX_SEQ_PADDING."
+            )
+            self._encoder_max_seq_padding = False
+
 
     def get_language_model(self) -> nn.Module:
         return self.model.decoder
+    
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.model.decoder.embed_tokens(input_ids)
 
-    def get_multimodal_embeddings(self, **kwargs) -> MultiModalEmbeddings:
-        # Required as part of SupportsMultiModal interface.
-        # For BART, we parse the encoder_input_ids and return encoder outputs
+    def embed_multimodal(self, **kwargs) -> MultiModalEmbeddings:
         encoder_input_ids_list = self._parse_and_validate_encoder_input(**kwargs)
 
         if not encoder_input_ids_list:
@@ -1144,36 +1175,69 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
             )
 
         # Process each encoder input separately and return a list of outputs
-        # FIXME why the loop here? should process in batch
-        encoder_outputs = []
-        for encoder_input_ids in encoder_input_ids_list:
-            # Flatten to 1D tensor if needed
-            if isinstance(encoder_input_ids, torch.Tensor):
-                encoder_input_ids = encoder_input_ids.flatten()
+        if not self._encoder_max_seq_padding:
+            encoder_outputs: list[torch.Tensor] = []
+            for encoder_input_ids in encoder_input_ids_list:
+                # Create positions for encoder input (1D tensor)
+                encoder_positions = torch.arange(
+                    encoder_input_ids.size(-1),
+                    dtype=torch.long,
+                    device=encoder_input_ids.device,
+                )
+
+                # Run encoder and append output, (N,) -> (N,D)
+                encoder_output = self.model.encoder(
+                    input_ids=encoder_input_ids.squeeze(0),
+                    positions=encoder_positions,
+                )
+                encoder_outputs.append(encoder_output)
+        else:
+            # NOTE (NickLucche): Basic encoder batching optimization: BART input sequences
+            # can have different lengths. Due to computational load of encoder being very
+            # low here, we batch all sequences to run a single forward by max_seq padding.
+            lengths = [t.numel() for t in encoder_input_ids_list]
+            max_len = max(lengths) if lengths else 0
+            assert max_len > 0, "Empty encoder_input_ids encountered."
+
+            same_len = all(l == max_len for l in lengths)
+            if len(encoder_input_ids_list) == 1:
+                batch_encoder_input_ids = encoder_input_ids_list[0]
+            elif same_len:
+                # [1xD]xN =>NxD
+                batch_encoder_input_ids = torch.cat(encoder_input_ids_list, dim=0)
             else:
-                encoder_input_ids = torch.tensor(
-                    encoder_input_ids, device=self.device
-                ).flatten()
+                batch_encoder_input_ids = torch.full(
+                    (len(encoder_input_ids_list), max_len),
+                    fill_value=self._pad_id,
+                    dtype=encoder_input_ids_list[0].dtype,
+                    device=encoder_input_ids_list[0].device,
+                )
+                for i, t in enumerate(encoder_input_ids_list):
+                    batch_encoder_input_ids[i, : t.numel()] = t.squeeze()
 
-            # Create positions for encoder input (1D tensor)
-            encoder_positions = torch.arange(
-                encoder_input_ids.size(0),
+            # Create (B, T) positions: 0..T-1 for each item.
+            batch_encoder_positions = torch.arange(
+                max_len,
                 dtype=torch.long,
-                device=encoder_input_ids.device,
+                device=batch_encoder_input_ids.device,
+            ).unsqueeze(0).expand(batch_encoder_input_ids.size(0), -1)
+
+            # Run encoder once on the batch.
+            batch_encoder_output = self.model.encoder(
+                input_ids=batch_encoder_input_ids,
+                positions=batch_encoder_positions,
             )
 
-            # Run encoder and append output
-            encoder_output = self.model.encoder(
-                input_ids=encoder_input_ids,
-                positions=encoder_positions,
-            )
-            encoder_outputs.append(encoder_output)
-
+            # Split back into list[(T, H)] to match expected downstream format.
+            # If we had to pad, slice back to the original lengths per item.
+            encoder_outputs: list[torch.Tensor] = batch_encoder_output.unbind(dim=0)
+            if not same_len:
+                encoder_outputs = [
+                    out[:l] for out, l in zip(encoder_outputs, lengths)
+                ]
         return encoder_outputs
 
     def _parse_and_validate_encoder_input(self, **kwargs: object) -> list[torch.Tensor]:
-        # TODO input_ids vs encoder_input_ids is different between
-        # the profiling code path and normal execution path
         encoder_input_ids = kwargs.get("encoder_input_ids", kwargs.get("input_ids"))
 
         if encoder_input_ids is None:
@@ -1198,10 +1262,8 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
                     result.append(item)
             return result
         else:
-            # Single tensor - wrap in list
-            if encoder_input_ids.dim() == 0:
-                encoder_input_ids = encoder_input_ids.unsqueeze(0)
-            return [encoder_input_ids]
+            # [1xD]xN times 
+            return encoder_input_ids.unsqueeze(1).unbind(dim=0)
 
     def forward(
         self,

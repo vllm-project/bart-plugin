@@ -119,6 +119,23 @@ This plugin should work with any BART-based model from HuggingFace, including:
 - `facebook/bart-large-cnn`
 - Other BART variants and fine-tuned models
 
+## Evaluation
+
+To evaluate the model on CNN/DailyMail summarization:
+
+```bash
+# Install evaluation dependencies
+pip install datasets rouge-score
+
+# Quick test
+python scripts/eval_cnn_dailymail.py --num-samples 10
+
+# Full evaluation on test set
+python scripts/eval_cnn_dailymail.py --split test
+```
+
+See `scripts/eval_cnn_dailymail.py` for more options and reference ROUGE scores.
+
 ## TODO
  - [ ] Support `MBartForConditionalGeneration`
 

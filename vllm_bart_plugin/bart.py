@@ -30,8 +30,8 @@ from transformers import BartConfig
 from transformers.utils import logging
 
 from vllm.attention.layer import Attention, AttentionType
-from vllm.attention.layers.mm_encoder_attention import MMEncoderAttention
-from vllm.attention.layers.cross_attention import CrossAttention
+from vllm.model_executor.layers.attention.cross_attention import CrossAttention
+from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
 from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions

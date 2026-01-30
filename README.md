@@ -116,7 +116,6 @@ This plugin should work with any BART-based model from HuggingFace, including:
 
 - `facebook/bart-large-cnn`
 - `facebook/bart-large`
-- `facebook/bart-large-cnn`
 - Other BART variants and fine-tuned models
 
 ## Evaluation
@@ -156,10 +155,7 @@ export VLLM_PLUGINS=none
 
 ### `VLLM_BART_ENCODER_MAX_SEQ_PADDING`
 
-Enable a small optimization that **batches encoder forwards** by padding all encoder inputs in a batch to the maximum encoder sequence length, running the encoder once, then slicing outputs back to per-item lengths.
-
-- **Default**: disabled
-- **Enable**:
+Enable a small optimization that **batches encoder forwards** by padding all encoder inputs in a batch to the maximum encoder sequence length, running the encoder once, then slicing outputs back to per-item lengths. As performance is highly dependent on input sequence lenght distribution, this feature is disabled by default.
 
 ```bash
 export VLLM_BART_ENCODER_MAX_SEQ_PADDING=1

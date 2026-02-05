@@ -29,7 +29,9 @@ import torch
 from torch import nn
 from transformers import BartConfig
 from transformers.utils import logging
-from vllm.attention.layer import Attention, AttentionType
+
+from vllm.model_executor.layers.attention import Attention
+from vllm.v1.attention.backend import AttentionType
 from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions
@@ -85,7 +87,7 @@ from vllm.multimodal.processing import (
     EncDecMultiModalProcessor,
     PromptUpdate,
 )
-from vllm.multimodal.profiling import BaseDummyInputsBuilder
+from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 
@@ -934,6 +936,9 @@ class BartProcessingInfo(BaseProcessingInfo):
         config = self.get_hf_config()
         return {"text": config.max_position_embeddings}
 
+    def get_data_parser(self) -> MultiModalDataParser:
+        return TextDataParser()
+
 
 class BartDummyInputsBuilder(BaseDummyInputsBuilder[BartProcessingInfo]):
     """Builds dummy inputs for profiling BART models."""
@@ -1040,6 +1045,7 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         BART doesn't have a HuggingFace Processor - it only has a tokenizer.
         We tokenize both the prompt (decoder) and encoder text from mm_data.
         """
+        tok_kwargs["add_special_tokens"] = False
         from transformers.feature_extraction_utils import BatchFeature
 
         tokenizer = self.info.get_tokenizer()
@@ -1054,7 +1060,6 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
             encoder_text = encoder_texts[0] if encoder_texts else ""
             encoder_tokenized = tokenizer(
                 encoder_text,
-                add_special_tokens=False,
                 return_tensors="pt",
                 **tok_kwargs,
             )
@@ -1064,7 +1069,6 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         # This will be popped by the base class
         prompt_tokenized = tokenizer(
             prompt if prompt else "",
-            add_special_tokens=False,
             return_tensors="pt",
             **tok_kwargs,
         )

@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 from torch import nn
-from transformers import BartConfig, BattchFeature
+from transformers import BartConfig, BatchFeature, BartTokenizer, PretrainedConfig
 from transformers.utils import logging
 
 from vllm.attention.layer import Attention, AttentionType
@@ -53,6 +53,8 @@ from vllm.utils.collection_utils import is_list_of
 
 from vllm.model_executor.models.interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsQuant
 from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper, cast_overflow_tensors, maybe_prefix
+
+from vllm_bart_plugin.bart import BartDecoder, BartEncoder, BartParallelLMHead, BartScaledWordEmbedding
 
 
 class Florence2ImagePixelInputs(TypedDict):
@@ -636,19 +638,14 @@ class Florence2LanguageModel(nn.Module):
         encoder_outputs: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if inputs_embeds is not None or encoder_outputs is None:
-            # Run encoder attention if a non-zero number of encoder tokens
-            # are provided as input
-            encoder_hidden_states = self.encoder(input_ids=encoder_input_ids,
-                                                 positions=encoder_positions,
-                                                 inputs_embeds=inputs_embeds)
-
         # decoder outputs consists of
         # (dec_features, past_key_value, dec_hidden, dec_attn)
         decoder_outputs = self.decoder(
             decoder_input_ids=input_ids,
             decoder_positions=positions,
-            encoder_hidden_states=encoder_hidden_states)
+            inputs_embeds=inputs_embeds,
+            encoder_hidden_states=encoder_outputs,
+        )
 
         return decoder_outputs
 
@@ -696,10 +693,8 @@ class Florence2LanguageForConditionalGeneration(nn.Module):
     def compute_logits(
         self,
         hidden_states: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Optional[torch.Tensor]:
-        logits = self.logits_processor(self.lm_head, hidden_states,
-                                       sampling_metadata)
+    ) -> torch.Tensor | None:
+        logits = self.logits_processor(self.lm_head, hidden_states)
         return logits
 
     def load_weights(self, weights: Iterable[tuple[str,
@@ -1040,8 +1035,10 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal,
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        intermediate_tensors: Optional[IntermediateTensors] = None,
+        intermediate_tensors: IntermediateTensors | None = None,
+        inputs_embeds: torch.Tensor | None = None,
         encoder_outputs: torch.Tensor | None = None,
+        # num_encoder_outputs: int | None = None,
         **kwargs,
     ) -> torch.Tensor:
         r"""
@@ -1070,10 +1067,8 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal,
     def compute_logits(
         self,
         hidden_states: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Optional[torch.Tensor]:
-        return self.language_model.compute_logits(hidden_states,
-                                                  sampling_metadata)
+    ) -> torch.Tensor | None:
+        return self.language_model.compute_logits(hidden_states)
 
     def load_weights(self, weights: Iterable[tuple[str,
                                                    torch.Tensor]]) -> set[str]:

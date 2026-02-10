@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+from typing import Literal, TypedDict, OrderedDict
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
+
+import torch.nn.functional as F
+from einops import rearrange
 
 import torch
 from torch import nn
@@ -47,12 +51,12 @@ from vllm.multimodal.processing import (
     EncDecMultiModalProcessor,
     PromptUpdate,
 )
-from vllm.multimodal.profiling import BaseDummyInputsBuilder
+from vllm.multimodal.processing import BaseDummyInputsBuilder, PromptInsertion, PromptIndexTargets
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 
 from vllm.model_executor.models.interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsQuant
-from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper, cast_overflow_tensors, maybe_prefix
+from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper, cast_overflow_tensors, maybe_prefix, flatten_bn
 
 from vllm_bart_plugin.bart import BartDecoder, BartEncoder, BartParallelLMHead, BartScaledWordEmbedding
 
@@ -738,7 +742,7 @@ class Florence2ProcessingInfo(BaseProcessingInfo):
     def get_hf_processor(self):
         return self.ctx.get_hf_processor()
 
-    def get_supported_mm_limits(self) -> Mapping[str, Optional[int]]:
+    def get_supported_mm_limits(self) -> Mapping[str, int | None]:
         return {"image": 1}
 
     def get_num_image_tokens(self) -> int:
@@ -783,16 +787,16 @@ class Florence2MultiModalProcessor(
 
     def create_encoder_prompt(
         self,
-        prompt: Union[str, list[int]],
+        prompt: str | list[int],
         mm_data: MultiModalDataDict,
-    ) -> Union[str, list[int]]:
+    ) -> str | list[int]:
         return prompt
 
     def create_decoder_prompt(
         self,
-        prompt: Union[str, list[int]],
+        prompt: str | list[int],
         mm_data: MultiModalDataDict,
-    ) -> Union[str, list[int]]:
+    ) -> str | list[int]:
         return [self.info.get_hf_config().eos_token_id]
 
     def _apply_hf_processor_tokens_only(
@@ -837,7 +841,7 @@ class Florence2MultiModalProcessor(
         self,
         mm_items: MultiModalDataItems,
         hf_processor_mm_kwargs: Mapping[str, object],
-        out_mm_kwargs: MultiModalKwargs,
+        out_mm_kwargs: MultiModalKwargsItems,
     ) -> Sequence[PromptUpdate]:
         hf_config = self.info.get_hf_config()
         pad_token_id = hf_config.pad_token_id
@@ -857,11 +861,10 @@ class Florence2MultiModalProcessor(
     Florence2MultiModalProcessor,
     info=Florence2ProcessingInfo,
     dummy_inputs=Florence2DummyInputsBuilder)
-class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal,
-                                        SupportsV0Only):
+class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal):
 
     @classmethod
-    def get_placeholder_str(cls, modality: str, i: int) -> Optional[str]:
+    def get_placeholder_str(cls, modality: str, i: int) -> str | None:
         if modality.startswith("image"):
             return None
 
@@ -937,13 +940,9 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal,
         return data
 
     def _parse_and_validate_image_input(self, **kwargs: object):
-        pixel_values: Optional[Union[list[list[torch.Tensor]],
-                                     list[torch.Tensor],
-                                     torch.Tensor]] = kwargs.pop(
-                                         "pixel_values", None)
-        image_embeds: Optional[Union[list[list[torch.Tensor]],
-                                     list[torch.Tensor],
-                                     torch.Tensor]] = kwargs.pop(
+        pixel_values: list[list[torch.Tensor]] | list[torch.Tensor] | torch.Tensor | None = kwargs.pop(
+            "pixel_values", None)
+        image_embeds: list[list[torch.Tensor]] | list[torch.Tensor] | torch.Tensor | None = kwargs.pop(
                                          "image_embeds", None)
 
         if pixel_values is None and image_embeds is None:

@@ -50,8 +50,10 @@ from vllm.multimodal.processing import (
     BaseProcessingInfo,
     EncDecMultiModalProcessor,
     PromptUpdate,
+    PromptInsertion,
+    PromptIndexTargets,
 )
-from vllm.multimodal.processing import BaseDummyInputsBuilder, PromptInsertion, PromptIndexTargets
+from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 
@@ -565,7 +567,7 @@ class DaViT(nn.Module):
 
     def forward_features_unpool(self, x):
         """
-        forward until avg pooling 
+        forward until avg pooling
         Args:
             x (_type_): input image tensor
         """
@@ -613,7 +615,7 @@ class Florence2LanguageModel(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
 
-        config = vllm_config.model_config.hf_config
+        config = vllm_config.model_config.hf_text_config
         cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
 
@@ -674,6 +676,8 @@ class Florence2LanguageForConditionalGeneration(nn.Module):
 
         self.logits_processor = LogitsProcessor(self.vocab_size,
                                                 config.vocab_size)
+        if self.config.tie_word_embeddings:
+            self.lm_head.tie_weights(self.model.shared)
 
     def forward(
         self,
@@ -705,9 +709,11 @@ class Florence2LanguageForConditionalGeneration(nn.Module):
                                                    torch.Tensor]]) -> set[str]:
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
-            ("qkv_proj", "q_proj", "q"),
-            ("qkv_proj", "k_proj", "k"),
-            ("qkv_proj", "v_proj", "v"),
+            ("encoder_attn.kv_proj", "encoder_attn.k_proj", "k"),
+            ("encoder_attn.kv_proj", "encoder_attn.v_proj", "v"),
+            ("self_attn.qkv_proj", "self_attn.q_proj", "q"),
+            ("self_attn.qkv_proj", "self_attn.k_proj", "k"),
+            ("self_attn.qkv_proj", "self_attn.v_proj", "v"),
         ]
 
         params_dict = dict(self.named_parameters())
@@ -760,6 +766,7 @@ class Florence2DummyInputsBuilder(
         self,
         seq_len: int,
         mm_counts: Mapping[str, int],
+        mm_options: Mapping[str, BaseDummyOptions] | None = None,
     ) -> MultiModalDataDict:
         num_images = mm_counts.get("image", 0)
 
@@ -918,8 +925,8 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal):
                 'Florence2 only supports COSINE as temporal embedding.')
 
     def _validate_pixel_values(
-        self, data: Union[torch.Tensor, list[torch.Tensor]]
-    ) -> Union[torch.Tensor, list[torch.Tensor]]:
+        self, data: torch.Tensor | list[torch.Tensor]
+    ) -> torch.Tensor | list[torch.Tensor]:
 
         size = self.processor_config["size"]
         h, w = size["height"], size["width"]

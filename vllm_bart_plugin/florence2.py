@@ -694,7 +694,22 @@ class Florence2LanguageForConditionalGeneration(nn.Module):
                           inputs_embeds=inputs_embeds,
                           encoder_outputs=encoder_outputs)
 
-    def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def get_encoder_outputs(
+        self,
+        encoder_input_ids: torch.Tensor,
+        encoder_positions: torch.Tensor,
+        inputs_embeds: torch.Tensor | list[torch.Tensor] | None = None,
+    ) -> torch.Tensor | None:
+        # Run encoder attention if a non-zero number of encoder tokens
+        # are provided as input
+        encoder_hidden_states = self.model.encoder(
+            input_ids=encoder_input_ids,
+            positions=encoder_positions,
+            inputs_embeds=inputs_embeds,
+        )
+        return encoder_hidden_states
+
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.encoder.embed_tokens(input_ids)
 
     def compute_logits(
@@ -827,6 +842,7 @@ class Florence2MultiModalProcessor(
         if mm_data:
             processed_outputs = super()._call_hf_processor(
                 prompt, mm_data, mm_kwargs, tok_kwargs)
+            # processed_outputs["encoder_input_ids"] = processed_outputs["input_ids"]
         else:
             hf_processor = self.info.get_hf_processor()
             tokenizer = hf_processor.tokenizer
@@ -834,6 +850,7 @@ class Florence2MultiModalProcessor(
             processed_outputs = tokenizer(prompt,
                                           add_special_tokens=True,
                                           return_tensors="pt")
+        processed_outputs["encoder_input_ids"] = processed_outputs["input_ids"]
         return processed_outputs
 
     def _get_mm_fields_config(
@@ -841,7 +858,10 @@ class Florence2MultiModalProcessor(
         hf_inputs: BatchFeature,
         hf_processor_mm_kwargs: Mapping[str, object],
     ) -> Mapping[str, MultiModalFieldConfig]:
-        return dict(pixel_values=MultiModalFieldConfig.batched("image"))
+        return dict(
+            pixel_values=MultiModalFieldConfig.batched("image"),
+            encoder_input_ids=MultiModalFieldConfig.batched("image"),
+        )
 
     def _get_prompt_updates(
         self,
@@ -969,6 +989,34 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal):
 
         raise AssertionError("This line should be unreachable.")
 
+    def _parse_and_validate_encoder_input(self, **kwargs: object) -> list[torch.Tensor]:
+        encoder_input_ids = kwargs.get("encoder_input_ids", kwargs.get("input_ids"))
+
+        if encoder_input_ids is None:
+            return []
+
+        if not isinstance(encoder_input_ids, (torch.Tensor, list)):
+            raise ValueError(
+                "Incorrect type of encoder input_ids. "
+                f"Got type: {type(encoder_input_ids)}"
+            )
+
+        # Return as a list of tensors (one per item in the batch)
+        if isinstance(encoder_input_ids, list):
+            # Already a list - ensure each item is valid
+            result = []
+            for item in encoder_input_ids:
+                if isinstance(item, torch.Tensor):
+                    if item.dim() == 0:
+                        item = item.unsqueeze(0)
+                    result.append(item)
+                else:
+                    result.append(item)
+            return result
+        else:
+            # [1xD]xN times
+            return encoder_input_ids.unsqueeze(1).unbind(dim=0)
+
     def _encode_image(self, pixel_values: torch.Tensor) -> torch.Tensor:
         dtype = next(self.vision_tower.parameters()).dtype
         pixel_values = pixel_values.to(dtype)
@@ -1029,11 +1077,70 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal):
         return self.language_model
 
     def embed_multimodal(self, **kwargs: object) -> MultiModalEmbeddings:
+        encoder_input_ids_list = self._parse_and_validate_encoder_input(**kwargs)
         image_input = self._parse_and_validate_image_input(**kwargs)
         if image_input is None:
-            return []
-        vision_embeddings = self._process_image_input(image_input)
-        return vision_embeddings
+            vision_embeddings = []
+        else:
+            vision_embeddings = self._process_image_input(image_input)
+
+        if not encoder_input_ids_list:
+            raise ValueError(
+                "encoder_input_ids_list is empty - this should not happen. "
+                "Check that multimodal data is being passed correctly."
+            )
+
+        # Process each encoder input separately and return a list of outputs
+        # NOTE (NickLucche): Basic encoder batching optimization: BART input sequences
+        # can have different lengths. Due to computational load of encoder being very
+        # low here, we batch all sequences to run a single forward by max_seq padding.
+        lengths = [t.numel() for t in encoder_input_ids_list]
+        max_len = max(lengths) if lengths else 0
+        assert max_len > 0, "Empty encoder_input_ids encountered."
+        same_len = all(l == max_len for l in lengths)
+        if len(encoder_input_ids_list) == 1:
+            batch_encoder_input_ids = encoder_input_ids_list[0]
+        elif same_len:
+            # [1xD]xN =>NxD
+            batch_encoder_input_ids = torch.cat(encoder_input_ids_list, dim=0)
+        else:
+            batch_encoder_input_ids = torch.full(
+                (len(encoder_input_ids_list), max_len),
+                fill_value=self._pad_id,
+                dtype=encoder_input_ids_list[0].dtype,
+                device=encoder_input_ids_list[0].device,
+            )
+            for i, t in enumerate(encoder_input_ids_list):
+                batch_encoder_input_ids[i, : t.numel()] = t.squeeze()
+        # Create (B, T) positions: 0..T-1 for each item.
+        # batch_encoder_positions = torch.arange(
+        #     max_len,
+        #     dtype=torch.long,
+        #     device=batch_encoder_input_ids.device,
+        # ).unsqueeze(0).expand(batch_encoder_input_ids.size(0), -1)
+
+        inputs_embeds = self.language_model.model.encoder.embed_tokens(batch_encoder_input_ids)
+        inputs_embeds = torch.cat([vision_embeddings, inputs_embeds], dim=-2)
+        batch_encoder_positions = torch.arange(
+            inputs_embeds.size(1),
+            dtype=torch.long,
+            device=inputs_embeds.device,
+        ).unsqueeze(0).expand(inputs_embeds.size(0), -1)
+
+        # Run encoder once on the batch.
+        batch_encoder_output = self.language_model.model.encoder(
+            input_ids=batch_encoder_input_ids,
+            positions=batch_encoder_positions,
+            inputs_embeds=inputs_embeds,
+        )
+        # Split back into list[(T, H)] to match expected downstream format.
+        # If we had to pad, slice back to the original lengths per item.
+        encoder_outputs: list[torch.Tensor] = batch_encoder_output.unbind(dim=0)
+        if not same_len:
+            encoder_outputs = [
+                out[:l] for out, l in zip(encoder_outputs, lengths)
+            ]
+        return encoder_outputs
 
     def forward(
         self,

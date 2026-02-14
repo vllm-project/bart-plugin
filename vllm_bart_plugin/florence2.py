@@ -842,7 +842,6 @@ class Florence2MultiModalProcessor(
         if mm_data:
             processed_outputs = super()._call_hf_processor(
                 prompt, mm_data, mm_kwargs, tok_kwargs)
-            # processed_outputs["encoder_input_ids"] = processed_outputs["input_ids"]
         else:
             hf_processor = self.info.get_hf_processor()
             tokenizer = hf_processor.tokenizer

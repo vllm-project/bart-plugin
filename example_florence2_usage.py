@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Example usage of the vLLM BART plugin.
+Florence-2 example usage of the vLLM BART plugin.
 
-This script demonstrates how to use BART models with vLLM
+This script demonstrates how to use Florence-2 models with vLLM
 after installing the BART plugin.
 """
 import vllm_bart_plugin
@@ -11,7 +11,7 @@ from vllm.assets.image import ImageAsset
 
 
 def main():
-    """Run BART model examples."""
+    """Run Florence-2 model examples."""
     model_name = "microsoft/Florence-2-large"
     tokenizer_name = "Isotr0py/Florence-2-tokenizer"
 

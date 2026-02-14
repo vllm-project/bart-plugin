@@ -691,7 +691,6 @@ class Florence2LanguageForConditionalGeneration(nn.Module):
     ) -> torch.Tensor:
         return self.model(input_ids,
                           positions,
-                          intermediate_tensors=intermediate_tensors,
                           inputs_embeds=inputs_embeds,
                           encoder_outputs=encoder_outputs)
 
@@ -962,8 +961,7 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal):
         if pixel_values is not None:
             return Florence2ImagePixelInputs(
                 type="pixel_values",
-                data=self._validate_pixel_values(
-                    flatten_bn(pixel_values, concat=True)),
+                data=self._validate_pixel_values(pixel_values),
             )
 
         if image_embeds is not None:

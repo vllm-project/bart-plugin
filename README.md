@@ -1,10 +1,10 @@
 # vLLM BART Model Plugin
 
-This plugin adds support for BART (Bidirectional and Auto-Regressive Transformers) models to vLLM's inference engine.
+This plugin adds support for BART (Bidirectional and Auto-Regressive Transformers) and Florence-2 models to vLLM's inference engine.
 
 ## Overview
 
-BART is an encoder-decoder model that is particularly effective for sequence-to-sequence tasks like summarization, translation, and text generation. This plugin integrates the BART model implementation with vLLM's plugin system, allowing you to use BART models with vLLM's optimized inference engine.
+BART is an encoder-decoder model that is particularly effective for sequence-to-sequence tasks like summarization, translation, and text generation. Florence-2 is a vision-language model from Microsoft that uses a BART-based language backbone with a DaViT vision encoder. This plugin integrates these models with vLLM's plugin system, allowing you to use them with vLLM's optimized inference engine.
 
 ## Installation
 
@@ -46,6 +46,8 @@ python verify_plugin.py
 
 ### Basic Usage
 
+### BART
+
 Run `python example_usage.py` or
 
 ```python
@@ -62,7 +64,7 @@ llm = LLM(
 params = SamplingParams(temperature=0.0, max_tokens=20)
 outputs = llm.generate(
     [
-        {  
+        {
             "encoder_prompt": {
                 "prompt": "",
                 "multi_modal_data": {
@@ -87,6 +89,10 @@ for o in outputs:
     generated_text = o.outputs[0].text
     print("output:", generated_text)
 ```
+
+### Florence-2
+
+For Florence-2 vision-language models, see `example_florence2_usage.py`.
 
 ## Plugin Architecture
 
@@ -118,6 +124,13 @@ This plugin should work with any BART-based model from HuggingFace, including:
 - `facebook/bart-large`
 - Other BART variants and fine-tuned models
 
+### Florence-2 Models
+
+- `microsoft/Florence-2-base`
+- `microsoft/Florence-2-large`
+
+Note: Florence-2 requires `trust_remote_code=True` and uses a separate tokenizer (`Isotr0py/Florence-2-tokenizer`).
+
 ## Evaluation
 
 To evaluate the model on CNN/DailyMail summarization:
@@ -137,6 +150,7 @@ See `scripts/eval_cnn_dailymail.py` for more options and reference ROUGE scores.
 
 ## TODO
  - [ ] Support `MBartForConditionalGeneration`
+ - [x] Support `Florence2ForConditionalGeneration`
 
 ## Environment Variables
 

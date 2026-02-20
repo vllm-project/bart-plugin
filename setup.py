@@ -4,7 +4,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="vllm-bart-plugin",
-    version="0.1.1",
+    version="0.2.0",
     description="BART model plugin for vLLM",
     author="Nicolò Lucchesi",
     author_email="nick.lucche@redhat.com",

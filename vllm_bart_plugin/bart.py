@@ -21,6 +21,7 @@
 """PyTorch BART model."""
 
 import math
+import os
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -28,15 +29,14 @@ import torch
 from torch import nn
 from transformers import BartConfig
 from transformers.utils import logging
-
 from vllm.attention.layer import Attention, AttentionType
-from vllm.model_executor.layers.attention.cross_attention import CrossAttention
-from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
 from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import get_act_fn
+from vllm.model_executor.layers.attention.cross_attention import CrossAttention
+from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     QKVParallelLinear,
@@ -49,6 +49,17 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+from vllm.model_executor.models.interfaces import (
+    MultiModalEmbeddings,
+    SupportsMultiModal,
+    SupportsQuant,
+)
+from vllm.model_executor.models.utils import (
+    AutoWeightsLoader,
+    WeightsMapper,
+    cast_overflow_tensors,
+    maybe_prefix,
+)
 from vllm.multimodal import MULTIMODAL_REGISTRY, ModalityData
 from vllm.multimodal.inputs import (
     MultiModalDataDict,
@@ -71,11 +82,8 @@ from vllm.multimodal.profiling import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 
-from vllm.model_executor.models.interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsQuant
-from vllm.model_executor.models.utils import AutoWeightsLoader, WeightsMapper, cast_overflow_tensors, maybe_prefix
-import os
-
 logger = logging.get_logger(__name__)
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     """Parse a boolean-ish environment variable.
@@ -1121,6 +1129,7 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
             "LayerNorm": "layernorm",
         },
     )
+    keys_to_ignore_on_load_missing = ["final_logits_bias"]
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -1142,6 +1151,9 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
         self.lm_head = BartParallelLMHead(
             config.vocab_size, config.d_model, embed_scale=embed_scale
         )
+        # Bias added to logits after lm_head, matching HuggingFace approach
+        self.register_buffer("final_logits_bias",
+                             torch.zeros((1, config.vocab_size)))
         self.logits_processor = LogitsProcessor(
             self.unpadded_vocab_size, config.vocab_size
         )
@@ -1158,10 +1170,9 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
             )
             self._encoder_max_seq_padding = False
 
-
     def get_language_model(self) -> nn.Module:
         return self.model.decoder
-    
+
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.decoder.embed_tokens(input_ids)
 
@@ -1216,11 +1227,15 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
                     batch_encoder_input_ids[i, : t.numel()] = t.squeeze()
 
             # Create (B, T) positions: 0..T-1 for each item.
-            batch_encoder_positions = torch.arange(
-                max_len,
-                dtype=torch.long,
-                device=batch_encoder_input_ids.device,
-            ).unsqueeze(0).expand(batch_encoder_input_ids.size(0), -1)
+            batch_encoder_positions = (
+                torch.arange(
+                    max_len,
+                    dtype=torch.long,
+                    device=batch_encoder_input_ids.device,
+                )
+                .unsqueeze(0)
+                .expand(batch_encoder_input_ids.size(0), -1)
+            )
 
             # Run encoder once on the batch.
             batch_encoder_output = self.model.encoder(
@@ -1233,7 +1248,7 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
             encoder_outputs: list[torch.Tensor] = batch_encoder_output.unbind(dim=0)
             if not same_len:
                 encoder_outputs = [
-                    out[:l] for out, l in zip(encoder_outputs, lengths)
+                    out[:l] for out, l in zip(encoder_outputs, lengths, strict=False)
                 ]
         return encoder_outputs
 
@@ -1262,7 +1277,7 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
                     result.append(item)
             return result
         else:
-            # [1xD]xN times 
+            # [1xD]xN times
             return encoder_input_ids.unsqueeze(1).unbind(dim=0)
 
     def forward(
@@ -1302,14 +1317,20 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
         hidden_states: torch.Tensor,
     ) -> torch.Tensor | None:
         logits = self.logits_processor(self.lm_head, hidden_states)
+        if logits is not None:
+            logits = logits + self.final_logits_bias
         return logits
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         weights_tuple_list = list(weights)
 
         shared_embedding_weight = None
+        # Load separately as buffers are not registered as nn.Module
+        final_logits_bias_weight = None
         for name, loaded_weight in weights_tuple_list:
-            if (
+            if "final_logits_bias" in name:
+                final_logits_bias_weight = loaded_weight
+            elif (
                 "shared.weight" in name
                 or "encoder.embed_tokens.weight" in name
                 or "decoder.embed_tokens.weight" in name
@@ -1321,10 +1342,16 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
         loader = AutoWeightsLoader(
             self,
             skip_prefixes=(["cls.", "pooler."]),
+            skip_substrs=(["final_logits_bias"]),
         )
         loaded_params = loader.load_weights(
             weights_tuple_list, mapper=self.hf_to_vllm_mapper
         )
+
+        # Load final_logits_bias if present in checkpoint
+        if final_logits_bias_weight is not None:
+            self.final_logits_bias.copy_(final_logits_bias_weight)
+            loaded_params.add("final_logits_bias")
 
         if shared_embedding_weight is not None:
             weight_loader = getattr(
@@ -1341,5 +1368,10 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
                     "model.decoder.embed_tokens.weight",
                 }
             )
+
+        # Add keys_to_ignore_on_load_missing to loaded_params so vLLM
+        # doesn't report them as missing (they use default initialized values)
+        for key in self.keys_to_ignore_on_load_missing:
+            loaded_params.add(key)
 
         return loaded_params

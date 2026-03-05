@@ -1272,6 +1272,10 @@ class TextProcessorItems(ProcessorBatchItems[str]):
             data = [data]
         super().__init__(data, "text")
 
+    def get_processor_data(self) -> Mapping[str, object]:
+        # Gemma3 processor expects 'text' for text-only calls
+        return {"text": self.get_all()[0]}
+
 
 class TextDataParser(MultiModalDataParser):
     def __init__(self):

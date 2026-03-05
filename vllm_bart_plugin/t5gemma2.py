@@ -59,6 +59,7 @@ from vllm.multimodal.inputs import (
 )
 from vllm.multimodal.parse import (
     ImageSize,
+    ModalityDataItems,
     ModalityDataParser,
     MultiModalDataItems,
     MultiModalDataParser,

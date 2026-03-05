@@ -51,8 +51,7 @@ def main():
     
     for i, o in enumerate(outputs):
         generated_text = o.outputs[0].text
-        print(f"
---- Output {i+1} ---")
+        print(f"\n--- Output {i+1} ---")
         print(generated_text)
 
 

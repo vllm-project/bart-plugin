@@ -52,7 +52,7 @@ from vllm.model_executor.models.interfaces import (
     SupportsPP,
 )
 from vllm.model_executor.models.siglip import SiglipVisionModel
-from vllm.multimodal import MULTIMODAL_REGISTRY
+from vllm.multimodal import MULTIMODAL_REGISTRY, ModalityData
 from vllm.multimodal.inputs import (
     MultiModalFieldConfig,
     MultiModalKwargsItems,
@@ -62,6 +62,7 @@ from vllm.multimodal.parse import (
     ModalityDataParser,
     MultiModalDataItems,
     MultiModalDataParser,
+    ProcessorBatchItems,
 )
 from vllm.multimodal.processing import (
     BaseDummyInputsBuilder,
@@ -1262,7 +1263,45 @@ class T5Gemma2DummyInputsBuilder(BaseDummyInputsBuilder[T5Gemma2ProcessingInfo])
         }
 
 
+class TextProcessorItems(ProcessorBatchItems[str]):
+    """
+    Data items for text modality (encoder input is text).
+    """
+
+    def __init__(self, data) -> None:
+        if data is None:
+            data = [""]
+        elif isinstance(data, str):
+            data = [data]
+        super().__init__(data, "text")
+
+
+class TextDataParser(MultiModalDataParser):
+    def __init__(self):
+        super().__init__()
+
+    def _parse_text_data(
+        self,
+        data: ModalityData[str],
+    ) -> ModalityDataItems[Any, Any] | None:
+        """Parse text data for T5Gemma2."""
+        if data is None:
+            return TextProcessorItems(None)
+
+        if self._is_empty(data):
+            return None
+
+        return TextProcessorItems(data)
+
+    def _get_subparsers(self) -> Mapping[str, ModalityDataParser]:
+        subparsers = super()._get_subparsers()
+        return {**subparsers, "text": self._parse_text_data}
+
+
 class T5Gemma2MultiModalProcessor(BaseMultiModalProcessor[T5Gemma2ProcessingInfo]):
+    def _get_data_parser(self) -> MultiModalDataParser:
+        return TextDataParser()
+
     def _get_mm_fields_config(
         self,
         hf_inputs: BatchFeature,

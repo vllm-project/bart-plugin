@@ -72,7 +72,7 @@ from vllm.sequence import IntermediateTensors
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
 from vllm.v1.attention.backend import AttentionType
 
-from .utils import (
+from vllm.model_executor.models.utils import (
     WeightsMapper,
     is_pp_missing_parameter,
     make_empty_intermediate_tensors_factory,

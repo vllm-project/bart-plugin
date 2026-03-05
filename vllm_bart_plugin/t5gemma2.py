@@ -1228,13 +1228,8 @@ class T5Gemma2ProcessingInfo(BaseProcessingInfo):
             width=vision_config.image_size, height=vision_config.image_size
         )
 
-    def _get_data_parser(self) -> MultiModalDataParser:
-        return MultiModalDataParser(
-            [
-                ModalityDataParser(modality="image"),
-                ModalityDataParser(modality="text"),
-            ]
-        )
+    def get_data_parser(self) -> MultiModalDataParser:
+        return TextDataParser()
 
 
 class T5Gemma2DummyInputsBuilder(BaseDummyInputsBuilder[T5Gemma2ProcessingInfo]):
@@ -1300,9 +1295,6 @@ class TextDataParser(MultiModalDataParser):
 
 
 class T5Gemma2MultiModalProcessor(BaseMultiModalProcessor[T5Gemma2ProcessingInfo]):
-    def _get_data_parser(self) -> MultiModalDataParser:
-        return TextDataParser()
-
     def _get_mm_fields_config(
         self,
         hf_inputs: BatchFeature,

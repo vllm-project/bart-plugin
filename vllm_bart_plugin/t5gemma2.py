@@ -69,6 +69,7 @@ from vllm.multimodal.processing import (
     BaseDummyInputsBuilder,
     BaseMultiModalProcessor,
     BaseProcessingInfo,
+    PromptInsertion,
     PromptReplacement,
     PromptUpdate,
 )
@@ -1302,7 +1303,19 @@ class T5Gemma2MultiModalProcessor(BaseMultiModalProcessor[T5Gemma2ProcessingInfo
     ) -> Mapping[str, MultiModalFieldConfig]:
         return dict(
             pixel_values=MultiModalFieldConfig.batched("image"),
+            texts=MultiModalFieldConfig.batched("text"),
         )
+
+    def _call_hf_processor(
+        self,
+        prompt: str,
+        mm_data: Mapping[str, object],
+        mm_kwargs: Mapping[str, object],
+        tok_kwargs: Mapping[str, object],
+    ) -> BatchFeature:
+        # Use the standard HuggingFace processor for images
+        # We handle text modality manually as prompt updates
+        return self.info.get_hf_processor()(**mm_kwargs, **tok_kwargs)
 
     def _get_prompt_updates(
         self,
@@ -1317,19 +1330,38 @@ class T5Gemma2MultiModalProcessor(BaseMultiModalProcessor[T5Gemma2ProcessingInfo
             processor, "boi_token", getattr(processor, "image_token", "<image>")
         )
 
-        def get_replacement(item_idx: int):
+        updates = []
+
+        # Replace image tokens with dummy ids for SigLIP
+        def get_image_replacement(item_idx: int):
             num_image_tokens = self.info.get_num_image_tokens(
                 image_width=0, image_height=0
             )
             return [image_token_id] * num_image_tokens
 
-        return [
-            PromptReplacement(
-                modality="image",
-                target=image_token,
-                replacement=get_replacement,
-            ),
-        ]
+        if "image" in mm_items:
+            updates.append(
+                PromptReplacement(
+                    modality="image",
+                    target=image_token,
+                    replacement=get_image_replacement,
+                ))
+
+        # For encoder-decoder text: insert it into the encoder prompt
+        def get_text_insertion(item_idx: int):
+            text_items = mm_items["text"]
+            text = text_items[item_idx] if item_idx < len(text_items) else ""
+            return text
+
+        if "text" in mm_items:
+            updates.append(
+                PromptInsertion(
+                    modality="text",
+                    target=0,  # Insert at the beginning of encoder prompt
+                    insertion=get_text_insertion,
+                ))
+
+        return updates
 
 
 @MULTIMODAL_REGISTRY.register_processor(

@@ -59,7 +59,9 @@ from vllm.multimodal.inputs import (
 )
 from vllm.multimodal.parse import (
     ImageSize,
+    ModalityDataParser,
     MultiModalDataItems,
+    MultiModalDataParser,
 )
 from vllm.multimodal.processing import (
     BaseDummyInputsBuilder,
@@ -1202,7 +1204,7 @@ class T5Gemma2ProcessingInfo(BaseProcessingInfo):
         return self.ctx.get_hf_config(T5Gemma2Config)
 
     def get_supported_mm_limits(self) -> Mapping[str, int | None]:
-        return {"image": None}
+        return {"image": None, "text": 1}
 
     def get_num_image_tokens(
         self,
@@ -1222,6 +1224,14 @@ class T5Gemma2ProcessingInfo(BaseProcessingInfo):
         vision_config = hf_config.encoder.vision_config
         return ImageSize(
             width=vision_config.image_size, height=vision_config.image_size
+        )
+
+    def _get_data_parser(self) -> MultiModalDataParser:
+        return MultiModalDataParser(
+            [
+                ModalityDataParser(modality="image"),
+                ModalityDataParser(modality="text"),
+            ]
         )
 
 

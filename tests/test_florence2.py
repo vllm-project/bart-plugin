@@ -131,7 +131,6 @@ def florence2_llm():
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
     return LLM(
         model=MODEL_NAME,
-        trust_remote_code=True,
         enforce_eager=True,
         gpu_memory_utilization=0.5,
         mm_processor_cache_gb=0,
@@ -203,7 +202,7 @@ class TestFlorenceInference:
         """Processor output must not exceed BART max_position_embeddings."""
         from transformers import AutoProcessor
 
-        processor = AutoProcessor.from_pretrained(MODEL_NAME, trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(MODEL_NAME)
         out = processor(
             text="<DETAILED_CAPTION>", images=stop_sign_image, return_tensors="pt"
         )

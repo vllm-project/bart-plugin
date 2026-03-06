@@ -17,7 +17,6 @@ def main():
     llm = LLM(
         model=model_name,
         mm_processor_cache_gb=0,
-        trust_remote_code=True,
         enforce_eager=True,
     )
     params = SamplingParams(

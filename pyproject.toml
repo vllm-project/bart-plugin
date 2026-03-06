@@ -62,8 +62,20 @@ include = '\.pyi?$'
 profile = "black"
 line_length = 88
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests requiring a GPU and full model download (deselect with '-m \"not slow\"')",
+]
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "black>=26.1.0",
+    "isort>=8.0.1",
+    "pytest>=9.0.2",
+]

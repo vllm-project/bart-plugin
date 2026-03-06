@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-bart-plugin"
-version = "0.2.0"
+version = "0.3.0"
 description = "BART model plugin for vLLM"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,9 +26,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "vllm>=0.14.0",
+    "vllm>=0.16.0",
     "torch>=2.9.0",
-    "transformers>=4.56.0,<5",
+    "transformers>=4.56.0",
 ]
 
 [project.optional-dependencies]

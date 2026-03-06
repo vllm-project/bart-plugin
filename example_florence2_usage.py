@@ -12,7 +12,7 @@ from vllm.assets.image import ImageAsset
 
 def main():
     """Run Florence-2 model examples."""
-    model_name = "microsoft/Florence-2-large"
+    model_name = "microsoft/Florence-2-large-ft"
     tokenizer_name = "Isotr0py/Florence-2-tokenizer"
 
     llm = LLM(

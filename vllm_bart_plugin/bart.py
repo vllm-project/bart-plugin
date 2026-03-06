@@ -29,7 +29,8 @@ import torch
 from torch import nn
 from transformers import BartConfig
 from transformers.utils import logging
-from vllm.attention.layer import Attention, AttentionType
+from vllm.model_executor.layers.attention import Attention
+from vllm.v1.attention.backend import AttentionType
 from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions
@@ -78,7 +79,7 @@ from vllm.multimodal.processing import (
     EncDecMultiModalProcessor,
     PromptUpdate,
 )
-from vllm.multimodal.profiling import BaseDummyInputsBuilder
+from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 

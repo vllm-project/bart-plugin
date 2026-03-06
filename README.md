@@ -15,6 +15,13 @@ This plugin requires [uv](https://docs.astral.sh/uv/) for package management. If
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+### From Git
+
+Install using git as a package index:
+
+```bash
+pip install git+https://github.com/vllm-project/bart-plugin
+```
 
 ### From Source
 
@@ -186,11 +193,14 @@ Notes:
 ```
 bart-plugin/
 ├── vllm_bart_plugin/
-│   ├── __init__.py          # Plugin registration
-│   └── bart.py              # BART model implementation
-├── setup.py                 # Package configuration and entry points
-├── README.md                # This file
-└── LICENSE                  # License file
+│   ├── __init__.py            # Plugin registration
+│   └── bart.py                # BART model implementation
+│   └── florence2.py           # Florence-2 model implementation
+├── setup.py                   # Package configuration and entry points
+├── README.md                  # This file
+└── LICENSE                    # License file
+└── example_bart_usage.py      # Example usage script for BART
+└── example_florence2_usage.py # Example usage script for Florence-2
 ```
 
 ### Running Tests

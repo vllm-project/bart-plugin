@@ -22,8 +22,6 @@ def main():
     params = SamplingParams(
         temperature=0.0,
         max_tokens=20,
-        # repetition_penalty is needed to prevent <s> repetition
-        repetition_penalty=1.5,
         # skip_special_tokens=False is needed to present
         # grounding tokens like <loc_0><loc_1>
         skip_special_tokens=False,

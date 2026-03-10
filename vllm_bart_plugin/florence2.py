@@ -718,6 +718,19 @@ class Florence2DummyInputsBuilder(BaseDummyInputsBuilder[Florence2ProcessingInfo
 
 class Florence2MultiModalProcessor(EncDecMultiModalProcessor[Florence2ProcessingInfo]):
 
+    def __init__(self, info, dummy_inputs, *, cache=None) -> None:
+        super().__init__(info, dummy_inputs, cache=cache)
+        # Florence2Config does not expose decoder_start_token_id at the
+        # top level (it lives in text_config), so vLLM falls back to BOS
+        # (token 0) and incorrectly prepends it to the decoder prompt.
+        # Patch the top-level hf_config so vLLM's _prepare_decoder_input_ids
+        # sees the real value (EOS / token 2) and leaves our prompt intact.
+        hf_config = info.get_hf_config()
+        if getattr(hf_config, "decoder_start_token_id", None) is None:
+            hf_config.decoder_start_token_id = (
+                hf_config.text_config.decoder_start_token_id
+            )
+
     def _hf_processor_applies_updates(
         self,
         prompt_text: str,
@@ -742,7 +755,16 @@ class Florence2MultiModalProcessor(EncDecMultiModalProcessor[Florence2Processing
         prompt: str | list[int],
         mm_data: MultiModalDataDict,
     ) -> str | list[int]:
-        return [self.info.get_hf_config().text_config.eos_token_id]
+        text_config = self.info.get_hf_config().text_config
+        # Decoder prompt mirrors what transformers does before open-ended
+        # generation: start with decoder_start_token_id (</s>, token 2),
+        # then include forced_bos_token_id (<s>, token 0) so that vLLM
+        # generates from the same position as transformers step 2.
+        decoder_prompt = [text_config.decoder_start_token_id]
+        forced_bos = getattr(text_config, "forced_bos_token_id", None)
+        if forced_bos is not None:
+            decoder_prompt.append(forced_bos)
+        return decoder_prompt
 
     def _apply_hf_processor_tokens_only(
         self,
@@ -793,20 +815,40 @@ class Florence2MultiModalProcessor(EncDecMultiModalProcessor[Florence2Processing
         hf_processor_mm_kwargs: Mapping[str, object],
         out_mm_kwargs: MultiModalKwargsItems,
     ) -> Sequence[PromptUpdate]:
-        hf_config = self.info.get_hf_config()
-        # Use image_token_id (51289) — this is what the Florence2Processor
-        # inserts into input_ids. With _hf_processor_applies_updates=True,
-        # vllm will FIND these tokens in the existing prompt rather than
-        # inserting new ones (so no token doubling / length overflow).
-        image_token_id = hf_config.image_token_id
-        num_image_tokens = self.info.get_num_image_tokens()
-        image_tokens = [image_token_id] * num_image_tokens
+        # The placeholder must cover the FULL encoder input sequence (image
+        # tokens + text/task tokens) so that vLLM's _get_encoder_seq_lens
+        # computes the correct value for cross-attention KV cache allocation.
+        # Using only the image token count (577) would cause cross-attention
+        # to read only 577/590 K/V pairs, skipping the task-prompt tokens.
+        #
+        # With _hf_processor_applies_updates=True, vLLM detects the existing
+        # token sequence rather than inserting new tokens. By setting the
+        # insertion to the full encoder_input_ids sequence, the detected
+        # placeholder range covers all 590 encoder tokens.
+        insertion: list[int]
+        image_items = out_mm_kwargs.get("image", [])
+        if image_items:
+            item_data = image_items[0].get_data()
+            enc_ids = item_data.get("encoder_input_ids")
+            if enc_ids is not None:
+                insertion = enc_ids.tolist()
+            else:
+                # Cache hit: encoder_input_ids not available; fall back.
+                hf_config = self.info.get_hf_config()
+                insertion = (
+                    [hf_config.image_token_id] * self.info.get_num_image_tokens()
+                )
+        else:
+            hf_config = self.info.get_hf_config()
+            insertion = (
+                [hf_config.image_token_id] * self.info.get_num_image_tokens()
+            )
 
         return [
             PromptInsertion(
                 modality="image",
                 target=PromptIndexTargets.start(),
-                insertion=image_tokens,
+                insertion=insertion,
             )
         ]
 

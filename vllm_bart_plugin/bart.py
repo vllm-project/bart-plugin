@@ -928,6 +928,9 @@ class BartProcessingInfo(BaseProcessingInfo):
         config = self.get_hf_config()
         return {"text": config.max_position_embeddings}
 
+    def get_data_parser(self) -> "MultiModalDataParser":
+        return TextDataParser()
+
 
 class BartDummyInputsBuilder(BaseDummyInputsBuilder[BartProcessingInfo]):
     """Builds dummy inputs for profiling BART models."""
@@ -1042,6 +1045,9 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         has_encoder_data = mm_data is not None and "texts" in mm_data
         result = {}
 
+        # vLLM may pass add_special_tokens in tok_kwargs; we set it ourselves
+        tok_kwargs = {k: v for k, v in tok_kwargs.items() if k != "add_special_tokens"}
+
         if has_encoder_data:
             # Tokenize the encoder text from mm_data
             encoder_texts = mm_data["texts"]
@@ -1108,7 +1114,7 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
             )
         ]
 
-    def _get_data_parser(self) -> MultiModalDataParser:
+    def build_data_parser(self) -> MultiModalDataParser:
         return TextDataParser()
 
 

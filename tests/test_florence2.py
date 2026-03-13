@@ -39,25 +39,6 @@ class TestFlorenceVisionBackbone:
         assert out.shape == (2, vc.embed_dim[-1], 16, 16)
 
 
-class TestFlorenceVisionPositionalEmbeddingCosine1D:
-    def test_output_shape_and_no_batch_dim(self):
-        from vllm_bart_plugin.florence2 import (
-            Florence2VisionPositionalEmbeddingCosine1D,
-        )
-
-        m = Florence2VisionPositionalEmbeddingCosine1D(embed_dim=64, max_seq_len=100)
-        assert m(torch.randn(2, 5, 64)).shape == (5, 64)
-
-    def test_raises_if_exceeds_max(self):
-        from vllm_bart_plugin.florence2 import (
-            Florence2VisionPositionalEmbeddingCosine1D,
-        )
-
-        m = Florence2VisionPositionalEmbeddingCosine1D(embed_dim=64, max_seq_len=10)
-        with pytest.raises(AssertionError):
-            m(torch.randn(1, 20, 64))
-
-
 class TestFlorenceMultiModalProjector:
     def test_output_shape(self):
         from vllm_bart_plugin.florence2 import Florence2MultiModalProjector

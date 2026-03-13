@@ -7,58 +7,34 @@ from typing import Literal, TypedDict
 import torch
 from torch import nn
 from transformers import (
-    BartConfig,
     BartTokenizer,
     BatchFeature,
     Florence2Config,
     Florence2Processor,
 )
-from transformers.models.florence2.modeling_florence2 import Florence2VisionBackbone
-from vllm.config import CacheConfig, VllmConfig
-from vllm.config.lora import LoRAConfig
+from transformers.models.florence2.modeling_florence2 import (
+    Florence2MultiModalProjector,
+    Florence2VisionBackbone,
+)
+from vllm.config import VllmConfig
 from vllm.config.multimodal import BaseDummyOptions
-from vllm.distributed import get_tensor_model_parallel_world_size
-from vllm.model_executor.layers.activation import get_act_fn
-from vllm.model_executor.layers.attention import Attention
-from vllm.model_executor.layers.attention.cross_attention import CrossAttention
-from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
-from vllm.model_executor.layers.linear import (
-    ColumnParallelLinear,
-    QKVParallelLinear,
-    RowParallelLinear,
-)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
-from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
-from vllm.model_executor.layers.vocab_parallel_embedding import (
-    ParallelLMHead,
-    VocabParallelEmbedding,
-)
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models.interfaces import (
     MultiModalEmbeddings,
     SupportsMultiModal,
-    SupportsQuant,
 )
 from vllm.model_executor.models.utils import (
     AutoWeightsLoader,
     WeightsMapper,
-    cast_overflow_tensors,
-    flatten_bn,
-    maybe_prefix,
 )
-from vllm.multimodal import MULTIMODAL_REGISTRY, ModalityData
+from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import (
     MultiModalDataDict,
     MultiModalFieldConfig,
     MultiModalKwargsItems,
 )
-from vllm.multimodal.parse import (
-    ModalityDataItems,
-    ModalityDataParser,
-    MultiModalDataItems,
-    MultiModalDataParser,
-    ProcessorBatchItems,
-)
+from vllm.multimodal.parse import MultiModalDataItems
 from vllm.multimodal.processing import (
     BaseProcessingInfo,
     EncDecMultiModalProcessor,
@@ -68,8 +44,6 @@ from vllm.multimodal.processing import (
 )
 from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
-from vllm.utils.collection_utils import is_list_of
-from vllm.v1.attention.backend import AttentionType
 
 from vllm_bart_plugin.bart import (
     BartDecoder,
@@ -85,104 +59,6 @@ class Florence2ImagePixelInputs(TypedDict):
     """Shape: (batch_size, num_channel, height, width)"""
 
 
-class Florence2VisionLearnedAbsolutePositionEmbedding2D(nn.Module):
-    """2D learned absolute position embedding (NCHW interface)."""
-
-    def __init__(self, embedding_dim: int = 256, num_pos: int = 50):
-        super().__init__()
-        self.row_embeddings = nn.Embedding(num_pos, embedding_dim // 2)
-        self.column_embeddings = nn.Embedding(
-            num_pos, embedding_dim - (embedding_dim // 2)
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, C, H, W) — returns positional embeddings of same shape."""
-        height, width = x.shape[-2:]
-        x_emb = self.column_embeddings(torch.arange(width, device=x.device))
-        y_emb = self.row_embeddings(torch.arange(height, device=x.device))
-        pos = torch.cat(
-            [
-                x_emb.unsqueeze(0).expand(height, -1, -1),
-                y_emb.unsqueeze(1).expand(-1, width, -1),
-            ],
-            dim=-1,
-        )
-        return pos.permute(2, 0, 1).unsqueeze(0).expand(x.shape[0], -1, -1, -1)
-
-
-class Florence2VisionPositionalEmbeddingCosine1D(nn.Module):
-    """Sinusoidal temporal positional embedding; returns (T, C) without batch dim."""
-
-    def __init__(self, embed_dim: int = 512, max_seq_len: int = 100) -> None:
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.max_seq_len = max_seq_len
-        factor = math.log(10000)
-        denominator = torch.exp(-factor * torch.arange(0, embed_dim, 2) / embed_dim)
-        frequencies = torch.arange(0, max_seq_len).reshape(max_seq_len, 1) * denominator
-        pos_idx_to_embed = torch.zeros((max_seq_len, embed_dim))
-        pos_idx_to_embed[:, 0::2] = torch.sin(frequencies)
-        pos_idx_to_embed[:, 1::2] = torch.cos(frequencies)
-        self.pos_idx_to_embed = nn.Parameter(pos_idx_to_embed, requires_grad=False)
-
-    def forward(self, seq_embeds: torch.Tensor) -> torch.Tensor:
-        """seq_embeds: (B, T, C) — returns (T, C) positional embeddings."""
-        len_seq = seq_embeds.size(1)
-        assert len_seq <= self.max_seq_len
-        return self.pos_idx_to_embed[0:len_seq, :]
-
-
-class Florence2MultiModalProjector(nn.Module):
-    """
-    Projects vision backbone features into the language model's embedding space.
-    Applies 2D spatial positional embeddings, a temporal embedding, pools to
-    produce both a spatial-average and a per-token representation, then projects
-    with a linear layer + layer norm.
-
-    Input:  (B, C, H, W) NCHW feature map from Florence2VisionBackbone.
-    Output: (B, 1 + H*W, projection_dim) token embeddings for the encoder.
-    """
-
-    def __init__(self, config):
-        super().__init__()
-        embed_dim = config.vision_config.embed_dim[-1]
-        proj_dim = config.vision_config.projection_dim
-
-        self.image_projection = nn.Linear(embed_dim, proj_dim, bias=False)
-        self.image_proj_norm = nn.LayerNorm(proj_dim)
-        self.image_position_embed = Florence2VisionLearnedAbsolutePositionEmbedding2D(
-            embedding_dim=embed_dim,
-            num_pos=config.vision_config.max_position_embeddings,
-        )
-        self.visual_temporal_embed = Florence2VisionPositionalEmbeddingCosine1D(
-            embed_dim=embed_dim,
-            max_seq_len=config.vision_config.max_temporal_embeddings,
-        )
-
-    def forward(self, image_features: torch.Tensor) -> torch.Tensor:
-        # image_features: (B, C, H, W)
-        B, C, H, W = image_features.shape
-
-        # 2D spatial positional embedding
-        pos = self.image_position_embed(image_features)  # (B, C, H, W)
-        x = (image_features + pos).flatten(2).transpose(1, 2)  # (B, H*W, C)
-
-        # Temporal positional embedding (T=1 for single-frame images)
-        temporal_embed = self.visual_temporal_embed(x[:, :1, :])  # (1, C)
-        x = x + temporal_embed  # broadcast over H*W tokens
-
-        # Pool: spatial average (1 token) + all spatial tokens (H*W tokens)
-        x_t = x.unsqueeze(1)  # (B, 1, H*W, C) — treat as T=1 video
-        spatial_avg = x_t.mean(dim=2)  # (B, 1, C)
-        temporal_avg = x_t.mean(dim=1)  # (B, H*W, C)
-        x = torch.cat([spatial_avg, temporal_avg], dim=1)  # (B, 1+H*W, C)
-
-        x = self.image_projection(x)  # (B, 1+H*W, proj_dim)
-        x = self.image_proj_norm(x)
-        return x
-
-
-# Language backbone and processor implementation
 class Florence2LanguageModel(nn.Module):
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
@@ -706,5 +582,10 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal):
         return self.language_model.compute_logits(hidden_states)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        loader = AutoWeightsLoader(self)
+        # pos_idx_to_embed is a register_buffer in the transformers implementation
+        # (deterministically computed from config), so it has no matching parameter.
+        loader = AutoWeightsLoader(
+            self,
+            ignore_unexpected_suffixes=["visual_temporal_embed.pos_idx_to_embed"],
+        )
         return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)

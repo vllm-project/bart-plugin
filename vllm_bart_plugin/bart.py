@@ -1045,9 +1045,6 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         has_encoder_data = mm_data is not None and "texts" in mm_data
         result = {}
 
-        # vLLM may pass add_special_tokens in tok_kwargs; we set it ourselves
-        tok_kwargs = {k: v for k, v in tok_kwargs.items() if k != "add_special_tokens"}
-
         if has_encoder_data:
             # Tokenize the encoder text from mm_data
             encoder_texts = mm_data["texts"]
@@ -1159,8 +1156,7 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
             config.vocab_size, config.d_model, embed_scale=embed_scale
         )
         # Bias added to logits after lm_head, matching HuggingFace approach
-        self.register_buffer("final_logits_bias",
-                             torch.zeros((1, config.vocab_size)))
+        self.register_buffer("final_logits_bias", torch.zeros((1, config.vocab_size)))
         self.logits_processor = LogitsProcessor(
             self.unpadded_vocab_size, config.vocab_size
         )

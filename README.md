@@ -133,10 +133,8 @@ This plugin should work with any BART-based model from HuggingFace, including:
 
 ### Florence-2 Models
 
-- `microsoft/Florence-2-base`
-- `microsoft/Florence-2-large`
-
-Note: Florence-2 requires `trust_remote_code=True` and uses a separate tokenizer (`Isotr0py/Florence-2-tokenizer`).
+- `florence-community/Florence-2-base`
+- `florence-community/Florence-2-large`
 
 ## Evaluation
 

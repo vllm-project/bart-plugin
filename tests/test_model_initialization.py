@@ -1,7 +1,8 @@
 """Tests for BART model initialization."""
 
 import pytest
-import torch
+import vllm_bart_plugin
+vllm_bart_plugin.register_bart_model()
 from vllm import LLM
 
 
@@ -42,6 +43,7 @@ class TestModelInitialization:
         except Exception as e:
             pytest.fail(f"Failed to load model with config: {e}")
 
+    @pytest.mark.slow
     def test_model_class_initialization(self):
         """Test that model class can be instantiated."""
         from vllm_bart_plugin.bart import BartForConditionalGeneration
@@ -53,7 +55,6 @@ class TestModelInitialization:
 
         model_config = ModelConfig(
             model="facebook/bart-large-cnn",
-            task="generate",
             tokenizer="facebook/bart-large-cnn",
             tokenizer_mode="auto",
             trust_remote_code=False,
@@ -65,7 +66,6 @@ class TestModelInitialization:
         cache_config = CacheConfig(
             block_size=16,
             gpu_memory_utilization=0.3,
-            swap_space_bytes=0,
             cache_dtype="auto",
         )
 
@@ -77,7 +77,9 @@ class TestModelInitialization:
 
         # Try to instantiate the model
         try:
-            model = BartForConditionalGeneration(vllm_config=vllm_config)
+            from vllm.config import set_current_vllm_config
+            with set_current_vllm_config(vllm_config):
+                model = BartForConditionalGeneration(vllm_config=vllm_config)
             assert model is not None
             assert hasattr(model, 'model')
             assert hasattr(model, 'lm_head')
@@ -92,13 +94,14 @@ class TestModelInitialization:
             'forward',
             'compute_logits',
             'load_weights',
-            'get_multimodal_embeddings',
+            'embed_multimodal',
         ]
 
         for method in required_methods:
             assert hasattr(BartForConditionalGeneration, method), \
                 f"Model missing required method: {method}"
 
+    @pytest.mark.slow
     def test_encoder_decoder_structure(self):
         """Test that BART has proper encoder-decoder structure."""
         from vllm_bart_plugin.bart import BartModel, BartEncoder, BartDecoder
@@ -109,7 +112,6 @@ class TestModelInitialization:
 
         model_config = ModelConfig(
             model="facebook/bart-large-cnn",
-            task="generate",
             tokenizer="facebook/bart-large-cnn",
             tokenizer_mode="auto",
             trust_remote_code=False,
@@ -121,7 +123,6 @@ class TestModelInitialization:
         cache_config = CacheConfig(
             block_size=16,
             gpu_memory_utilization=0.3,
-            swap_space_bytes=0,
             cache_dtype="auto",
         )
 
@@ -131,7 +132,9 @@ class TestModelInitialization:
             load_config=LoadConfig(),
         )
 
-        model = BartModel(vllm_config=vllm_config)
+        from vllm.config import set_current_vllm_config
+        with set_current_vllm_config(vllm_config):
+            model = BartModel(vllm_config=vllm_config)
 
         assert hasattr(model, 'encoder')
         assert hasattr(model, 'decoder')

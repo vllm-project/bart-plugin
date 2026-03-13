@@ -29,7 +29,8 @@ import torch
 from torch import nn
 from transformers import BartConfig
 from transformers.utils import logging
-from vllm.attention.layer import Attention, AttentionType
+from vllm.model_executor.layers.attention import Attention
+from vllm.v1.attention.backend import AttentionType
 from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions
@@ -78,7 +79,7 @@ from vllm.multimodal.processing import (
     EncDecMultiModalProcessor,
     PromptUpdate,
 )
-from vllm.multimodal.profiling import BaseDummyInputsBuilder
+from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 
@@ -927,6 +928,9 @@ class BartProcessingInfo(BaseProcessingInfo):
         config = self.get_hf_config()
         return {"text": config.max_position_embeddings}
 
+    def get_data_parser(self) -> "MultiModalDataParser":
+        return TextDataParser()
+
 
 class BartDummyInputsBuilder(BaseDummyInputsBuilder[BartProcessingInfo]):
     """Builds dummy inputs for profiling BART models."""
@@ -1107,7 +1111,7 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
             )
         ]
 
-    def _get_data_parser(self) -> MultiModalDataParser:
+    def build_data_parser(self) -> MultiModalDataParser:
         return TextDataParser()
 
 
@@ -1152,8 +1156,7 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
             config.vocab_size, config.d_model, embed_scale=embed_scale
         )
         # Bias added to logits after lm_head, matching HuggingFace approach
-        self.register_buffer("final_logits_bias",
-                             torch.zeros((1, config.vocab_size)))
+        self.register_buffer("final_logits_bias", torch.zeros((1, config.vocab_size)))
         self.logits_processor = LogitsProcessor(
             self.unpadded_vocab_size, config.vocab_size
         )

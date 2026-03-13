@@ -34,10 +34,10 @@ def register_bart_model() -> None:
             "vllm_bart_plugin.florence2:Florence2ForConditionalGeneration",
         )
 
-        logger.info("Successfully registered BART model with vLLM")
+        logger.info("Successfully registered BART and Florence2 models with vLLM")
 
     except Exception as e:
-        logger.error(f"Failed to register BART model: {e}")
+        logger.error(f"Failed to register BART and Florence2 models: {e}")
         raise
 
 

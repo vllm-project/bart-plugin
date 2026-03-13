@@ -15,6 +15,13 @@ This plugin requires [uv](https://docs.astral.sh/uv/) for package management. If
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
+### From Git
+
+Install from git:
+
+```bash
+pip install git+https://github.com/vllm-project/bart-plugin
+```
 
 ### From Source
 
@@ -126,10 +133,8 @@ This plugin should work with any BART-based model from HuggingFace, including:
 
 ### Florence-2 Models
 
-- `microsoft/Florence-2-base`
-- `microsoft/Florence-2-large`
-
-Note: Florence-2 requires `trust_remote_code=True` and uses a separate tokenizer (`Isotr0py/Florence-2-tokenizer`).
+- `florence-community/Florence-2-base`
+- `florence-community/Florence-2-large`
 
 ## Evaluation
 
@@ -186,11 +191,14 @@ Notes:
 ```
 bart-plugin/
 ├── vllm_bart_plugin/
-│   ├── __init__.py          # Plugin registration
-│   └── bart.py              # BART model implementation
-├── setup.py                 # Package configuration and entry points
-├── README.md                # This file
-└── LICENSE                  # License file
+│   ├── __init__.py            # Plugin registration
+│   └── bart.py                # BART model implementation
+│   └── florence2.py           # Florence-2 model implementation
+├── setup.py                   # Package configuration and entry points
+├── README.md                  # This file
+└── LICENSE                    # License file
+└── example_bart_usage.py      # Example usage script for BART
+└── example_florence2_usage.py # Example usage script for Florence-2
 ```
 
 ### Running Tests

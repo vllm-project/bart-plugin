@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-bart-plugin"
-version = "0.2.0"
+version = "0.3.0"
 description = "BART model plugin for vLLM"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,9 +26,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "vllm>=0.14.0",
+    "vllm>=0.16.0",
     "torch>=2.9.0",
-    "transformers>=4.56.0,<5",
+    "transformers>=4.56.0,<6",
 ]
 
 [project.optional-dependencies]
@@ -62,8 +62,20 @@ include = '\.pyi?$'
 profile = "black"
 line_length = 88
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests requiring a GPU and full model download (deselect with '-m \"not slow\"')",
+]
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "black>=26.1.0",
+    "isort>=8.0.1",
+    "pytest>=9.0.2",
+]

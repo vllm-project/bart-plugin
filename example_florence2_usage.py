@@ -5,28 +5,23 @@ Florence-2 example usage of the vLLM BART plugin.
 This script demonstrates how to use Florence-2 models with vLLM
 after installing the BART plugin.
 """
-import vllm_bart_plugin
+
 from vllm import LLM, SamplingParams
 from vllm.assets.image import ImageAsset
 
 
 def main():
     """Run Florence-2 model examples."""
-    model_name = "microsoft/Florence-2-large"
-    tokenizer_name = "Isotr0py/Florence-2-tokenizer"
+    model_name = "florence-community/Florence-2-large-ft"
 
     llm = LLM(
         model=model_name,
-        tokenizer=tokenizer_name,
         mm_processor_cache_gb=0,
-        trust_remote_code=True,
         enforce_eager=True,
     )
     params = SamplingParams(
         temperature=0.0,
         max_tokens=20,
-        # repetition_penalty is needed to prevent <s> repetition
-        repetition_penalty=1.5,
         # skip_special_tokens=False is needed to present
         # grounding tokens like <loc_0><loc_1>
         skip_special_tokens=False,

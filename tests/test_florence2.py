@@ -30,55 +30,6 @@ def _small_vision_config():
 # ---------------------------------------------------------------------------
 
 
-class TestFlorenceVisionDropPath:
-    def test_eval_is_identity(self):
-        from vllm_bart_plugin.florence2 import Florence2VisionDropPath
-
-        m = Florence2VisionDropPath(drop_prob=0.9).eval()
-        x = torch.randn(2, 16)
-        assert torch.equal(m(x), x)
-
-    def test_training_drops_samples(self):
-        from vllm_bart_plugin.florence2 import Florence2VisionDropPath
-
-        torch.manual_seed(0)
-        m = Florence2VisionDropPath(drop_prob=0.5).train()
-        out = m(torch.ones(64, 16))
-        assert not torch.all(out == 1)
-
-
-class TestFlorenceVisionConvEmbed:
-    @pytest.mark.parametrize("pre_norm", [True, False])
-    def test_output_channels(self, pre_norm):
-        from vllm_bart_plugin.florence2 import Florence2VisionConvEmbed
-
-        m = Florence2VisionConvEmbed(
-            patch_size=7,
-            in_channels=3,
-            embed_dim=64,
-            stride=4,
-            padding=3,
-            pre_norm=pre_norm,
-        )
-        out = m(torch.randn(1, 3, 64, 64))
-        assert out.shape[1] == 64
-
-
-class TestFlorenceVisionWindowAttention:
-    def test_exact_window(self):
-        from vllm_bart_plugin.florence2 import Florence2VisionWindowAttention
-
-        m = Florence2VisionWindowAttention(dim=32, num_heads=4, window_size=4)
-        assert m(torch.randn(1, 4, 4, 32)).shape == (1, 16, 32)
-
-    def test_input_requires_padding(self):
-        from vllm_bart_plugin.florence2 import Florence2VisionWindowAttention
-
-        m = Florence2VisionWindowAttention(dim=32, num_heads=4, window_size=4)
-        # 6 is not divisible by 4; output should still be (B, 6*6, C)
-        assert m(torch.randn(1, 6, 6, 32)).shape == (1, 36, 32)
-
-
 class TestFlorenceVisionBackbone:
     def test_output_shape(self):
         from vllm_bart_plugin.florence2 import Florence2VisionBackbone
@@ -184,9 +135,9 @@ class TestFlorenceInference:
             max_tokens=30,
         )
         text = result["<CAPTION>"].lower()
-        assert "car" in text or "stop" in text, (
-            f"<CAPTION> output missing expected content: {text!r}"
-        )
+        assert (
+            "car" in text or "stop" in text
+        ), f"<CAPTION> output missing expected content: {text!r}"
 
     def test_detailed_caption(
         self, florence2_llm, florence2_processor, stop_sign_image
@@ -215,9 +166,9 @@ class TestFlorenceInference:
             max_tokens=100,
         )
         text = result["<MORE_DETAILED_CAPTION>"].lower()
-        assert "stop sign" in text or "sign" in text, (
-            f"<MORE_DETAILED_CAPTION> missing 'stop sign': {text!r}"
-        )
+        assert (
+            "stop sign" in text or "sign" in text
+        ), f"<MORE_DETAILED_CAPTION> missing 'stop sign': {text!r}"
         assert len(text.split()) >= 10, f"<MORE_DETAILED_CAPTION> too short: {text!r}"
 
     # ------------------------------------------------------------------
@@ -237,12 +188,12 @@ class TestFlorenceInference:
         for bbox in od["bboxes"]:
             assert len(bbox) == 4 and all(c >= 0 for c in bbox)
         labels = od["labels"]
-        assert "stop sign" in labels, (
-            f"Expected 'stop sign' in OD labels, got: {labels}"
-        )
-        assert "car" in labels or "building" in labels, (
-            f"Expected common objects in OD labels, got: {labels}"
-        )
+        assert (
+            "stop sign" in labels
+        ), f"Expected 'stop sign' in OD labels, got: {labels}"
+        assert (
+            "car" in labels or "building" in labels
+        ), f"Expected common objects in OD labels, got: {labels}"
 
     def test_dense_region_caption(
         self, florence2_llm, florence2_processor, stop_sign_image
@@ -257,9 +208,9 @@ class TestFlorenceInference:
         drc = result["<DENSE_REGION_CAPTION>"]
         assert "bboxes" in drc and "labels" in drc
         assert len(drc["bboxes"]) == len(drc["labels"]) > 0
-        assert "stop sign" in drc["labels"], (
-            f"Expected 'stop sign' in dense captions, got: {drc['labels']}"
-        )
+        assert (
+            "stop sign" in drc["labels"]
+        ), f"Expected 'stop sign' in dense captions, got: {drc['labels']}"
 
     def test_region_proposal(self, florence2_llm, florence2_processor, stop_sign_image):
         result = _run_task(
@@ -291,9 +242,9 @@ class TestFlorenceInference:
             assert len(quad) == 8
         # "STOP" is the most prominent text in the image
         joined = " ".join(ocr["labels"])
-        assert "STOP" in joined, (
-            f"Expected 'STOP' in OCR_WITH_REGION labels, got: {joined!r}"
-        )
+        assert (
+            "STOP" in joined
+        ), f"Expected 'STOP' in OCR_WITH_REGION labels, got: {joined!r}"
 
     def test_caption_to_phrase_grounding(
         self, florence2_llm, florence2_processor, stop_sign_image
@@ -309,9 +260,9 @@ class TestFlorenceInference:
         cpg = result["<CAPTION_TO_PHRASE_GROUNDING>"]
         assert "bboxes" in cpg and "labels" in cpg
         assert len(cpg["bboxes"]) > 0
-        assert any("stop sign" in lbl.lower() for lbl in cpg["labels"]), (
-            f"Expected 'stop sign' grounded, got labels: {cpg['labels']}"
-        )
+        assert any(
+            "stop sign" in lbl.lower() for lbl in cpg["labels"]
+        ), f"Expected 'stop sign' grounded, got labels: {cpg['labels']}"
 
     # ------------------------------------------------------------------
     # Batch tests

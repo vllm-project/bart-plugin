@@ -5,7 +5,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Literal, TypedDict
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 from transformers import (
     BartConfig,
@@ -14,6 +13,7 @@ from transformers import (
     Florence2Config,
     Florence2Processor,
 )
+from transformers.models.florence2.modeling_florence2 import Florence2VisionBackbone
 from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions
@@ -85,348 +85,6 @@ class Florence2ImagePixelInputs(TypedDict):
     """Shape: (batch_size, num_channel, height, width)"""
 
 
-def _drop_path(
-    x: torch.Tensor, drop_prob: float = 0.0, training: bool = False
-) -> torch.Tensor:
-    if drop_prob == 0.0 or not training:
-        return x
-    keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
-    random_tensor.floor_()
-    return x.div(keep_prob) * random_tensor
-
-
-class Florence2VisionDropPath(nn.Module):
-    def __init__(self, drop_prob: float = 0.0):
-        super().__init__()
-        self.drop_prob = drop_prob
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _drop_path(x, self.drop_prob, self.training)
-
-
-class Florence2VisionMLP(nn.Module):
-    def __init__(self, embed_dim: int, mlp_ratio: float = 4.0):
-        super().__init__()
-        hidden_dim = int(embed_dim * mlp_ratio)
-        self.fc1 = nn.Linear(embed_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, embed_dim)
-        self.act = nn.GELU()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc2(self.act(self.fc1(x)))
-
-
-class Florence2VisionConvEmbed(nn.Module):
-    """Image-to-patch embedding via strided convolution (NCHW in, NCHW out)."""
-
-    def __init__(
-        self,
-        patch_size: int,
-        in_channels: int,
-        embed_dim: int,
-        stride: int,
-        padding: int,
-        pre_norm: bool,
-    ):
-        super().__init__()
-        self.pre_norm = pre_norm
-        self.conv = nn.Conv2d(
-            in_channels,
-            embed_dim,
-            kernel_size=patch_size,
-            stride=stride,
-            padding=padding,
-        )
-        dim_norm = in_channels if pre_norm else embed_dim
-        self.norm = nn.LayerNorm(dim_norm)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.pre_norm:
-            x = self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        x = self.conv(x)
-        if not self.pre_norm:
-            x = self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-        return x
-
-
-class Florence2VisionChannelAttention(nn.Module):
-    """Channel (group) attention — attends over the channel dimension."""
-
-    def __init__(self, dim: int, groups: int, qkv_bias: bool = True):
-        super().__init__()
-        self.groups = groups
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.proj = nn.Linear(dim, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, N, C = x.shape
-        # Reshape: (B, N, 3, groups, C//groups) -> (3, B, groups, N, C//groups)
-        qkv = self.qkv(x).reshape(B, N, 3, self.groups, C // self.groups)
-        qkv = qkv.permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)  # each: (B, groups, N, C//groups)
-
-        # Scale by sequence length and compute channel-to-channel attention
-        q = q * (float(N) ** -0.5)
-        attn = (q.transpose(-2, -1) @ k).softmax(dim=-1)  # (B, groups, C//g, C//g)
-        out = (attn @ v.transpose(-2, -1)).transpose(-2, -1)  # (B, groups, N, C//g)
-        out = out.transpose(1, 2).reshape(B, N, C)
-        return self.proj(out)
-
-
-class Florence2VisionChannelBlock(nn.Module):
-    def __init__(
-        self,
-        embed_dim: int,
-        groups: int,
-        mlp_ratio: float = 4.0,
-        qkv_bias: bool = True,
-        drop_path_rate: float = 0.0,
-    ):
-        super().__init__()
-        self.conv1 = nn.Conv2d(
-            embed_dim, embed_dim, kernel_size=3, padding=1, groups=embed_dim
-        )
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.channel_attn = Florence2VisionChannelAttention(embed_dim, groups, qkv_bias)
-        self.drop_path1 = (
-            Florence2VisionDropPath(drop_path_rate)
-            if drop_path_rate > 0
-            else nn.Identity()
-        )
-        self.conv2 = nn.Conv2d(
-            embed_dim, embed_dim, kernel_size=3, padding=1, groups=embed_dim
-        )
-        self.norm2 = nn.LayerNorm(embed_dim)
-        self.ffn = Florence2VisionMLP(embed_dim, mlp_ratio)
-        self.drop_path2 = (
-            Florence2VisionDropPath(drop_path_rate)
-            if drop_path_rate > 0
-            else nn.Identity()
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        # Sub-block 1: depthwise conv residual + channel attention
-        x = self.conv1(x) + x
-        x_flat = x.flatten(2).transpose(1, 2)  # (B, H*W, C)
-        residual = x_flat
-        x_flat = residual + self.drop_path1(self.channel_attn(self.norm1(x_flat)))
-        x = x_flat.transpose(1, 2).view(B, C, H, W)
-        # Sub-block 2: depthwise conv residual + FFN
-        x = self.conv2(x) + x
-        x_flat = x.flatten(2).transpose(1, 2)
-        residual = x_flat
-        x_flat = residual + self.drop_path2(self.ffn(self.norm2(x_flat)))
-        x = x_flat.transpose(1, 2).view(B, C, H, W)
-        return x
-
-
-class Florence2VisionWindowAttention(nn.Module):
-    """Window-based local spatial self-attention."""
-
-    def __init__(
-        self, dim: int, num_heads: int, window_size: int, qkv_bias: bool = True
-    ):
-        super().__init__()
-        self.num_heads = num_heads
-        self.window_size = window_size
-        self.scale = (dim // num_heads) ** -0.5
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.proj = nn.Linear(dim, dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, H, W, C) BHWC
-        B, H, W, C = x.shape
-        pad_r = (self.window_size - W % self.window_size) % self.window_size
-        pad_b = (self.window_size - H % self.window_size) % self.window_size
-        if pad_r > 0 or pad_b > 0:
-            x = F.pad(x, (0, 0, 0, pad_r, 0, pad_b))
-        Hp, Wp = x.shape[1], x.shape[2]
-
-        # Partition into non-overlapping windows
-        x = x.view(
-            B,
-            Hp // self.window_size,
-            self.window_size,
-            Wp // self.window_size,
-            self.window_size,
-            C,
-        )
-        x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, self.window_size**2, C)
-
-        Bw, Nw = x.shape[:2]
-        qkv = (
-            self.qkv(x)
-            .reshape(Bw, Nw, 3, self.num_heads, C // self.num_heads)
-            .permute(2, 0, 3, 1, 4)
-        )
-        q, k, v = qkv.unbind(0)
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        x = (attn.softmax(dim=-1) @ v).transpose(1, 2).reshape(Bw, Nw, C)
-        x = self.proj(x)
-
-        # Merge windows back
-        x = x.view(-1, self.window_size, self.window_size, C)
-        x = x.view(
-            B,
-            Hp // self.window_size,
-            Wp // self.window_size,
-            self.window_size,
-            self.window_size,
-            C,
-        )
-        x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, Hp, Wp, C)
-        if pad_r > 0 or pad_b > 0:
-            x = x[:, :H, :W, :].contiguous()
-        return x.view(B, H * W, C)
-
-
-class Florence2VisionSpatialBlock(nn.Module):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        window_size: int,
-        mlp_ratio: float = 4.0,
-        qkv_bias: bool = True,
-        drop_path_rate: float = 0.0,
-    ):
-        super().__init__()
-        self.conv1 = nn.Conv2d(
-            embed_dim, embed_dim, kernel_size=3, padding=1, groups=embed_dim
-        )
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.window_attn = Florence2VisionWindowAttention(
-            embed_dim, num_heads, window_size, qkv_bias
-        )
-        self.drop_path1 = (
-            Florence2VisionDropPath(drop_path_rate)
-            if drop_path_rate > 0
-            else nn.Identity()
-        )
-        self.conv2 = nn.Conv2d(
-            embed_dim, embed_dim, kernel_size=3, padding=1, groups=embed_dim
-        )
-        self.norm2 = nn.LayerNorm(embed_dim)
-        self.ffn = Florence2VisionMLP(embed_dim, mlp_ratio)
-        self.drop_path2 = (
-            Florence2VisionDropPath(drop_path_rate)
-            if drop_path_rate > 0
-            else nn.Identity()
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        # Sub-block 1: depthwise conv residual + window attention
-        x = self.conv1(x) + x
-        x_flat = x.flatten(2).transpose(1, 2)  # (B, H*W, C)
-        residual = x_flat
-        x_bhwc = self.norm1(x_flat).view(B, H, W, C)
-        x_flat = residual + self.drop_path1(self.window_attn(x_bhwc))
-        x = x_flat.transpose(1, 2).view(B, C, H, W)
-        # Sub-block 2: depthwise conv residual + FFN
-        x = self.conv2(x) + x
-        x_flat = x.flatten(2).transpose(1, 2)
-        residual = x_flat
-        x_flat = residual + self.drop_path2(self.ffn(self.norm2(x_flat)))
-        x = x_flat.transpose(1, 2).view(B, C, H, W)
-        return x
-
-
-class Florence2VisionBlock(nn.Module):
-    def __init__(
-        self,
-        embed_dim: int,
-        num_heads: int,
-        num_groups: int,
-        window_size: int,
-        mlp_ratio: float = 4.0,
-        qkv_bias: bool = True,
-        spatial_drop_path_rate: float = 0.0,
-        channel_drop_path_rate: float = 0.0,
-    ):
-        super().__init__()
-        self.spatial_block = Florence2VisionSpatialBlock(
-            embed_dim,
-            num_heads,
-            window_size,
-            mlp_ratio,
-            qkv_bias,
-            spatial_drop_path_rate,
-        )
-        self.channel_block = Florence2VisionChannelBlock(
-            embed_dim, num_groups, mlp_ratio, qkv_bias, channel_drop_path_rate
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.channel_block(self.spatial_block(x))
-
-
-class Florence2VisionBackbone(nn.Module):
-    """
-    DaViT-based vision backbone for the new Florence-2 architecture.
-    Produces NCHW feature maps for the multi-modal projector.
-    """
-
-    def __init__(self, config):
-        super().__init__()
-        embed_dims = config.embed_dim
-        num_stages = len(embed_dims)
-        depths = config.depths
-        mlp_ratio = getattr(config, "mlp_ratio", 4.0)
-        qkv_bias = getattr(config, "qkv_bias", True)
-
-        dpr = [
-            x.item() for x in torch.linspace(0, config.drop_path_rate, sum(depths) * 2)
-        ]
-        depth_offset = 0
-
-        convs = []
-        blocks = []
-        for stage_idx in range(num_stages):
-            in_ch = config.in_channels if stage_idx == 0 else embed_dims[stage_idx - 1]
-            convs.append(
-                Florence2VisionConvEmbed(
-                    patch_size=config.patch_size[stage_idx],
-                    in_channels=in_ch,
-                    embed_dim=embed_dims[stage_idx],
-                    stride=config.patch_stride[stage_idx],
-                    padding=config.patch_padding[stage_idx],
-                    pre_norm=config.patch_prenorm[stage_idx],
-                )
-            )
-            stage_blocks = nn.ModuleList(
-                [
-                    Florence2VisionBlock(
-                        embed_dim=embed_dims[stage_idx],
-                        num_heads=config.num_heads[stage_idx],
-                        num_groups=config.num_groups[stage_idx],
-                        window_size=config.window_size,
-                        mlp_ratio=mlp_ratio,
-                        qkv_bias=qkv_bias,
-                        spatial_drop_path_rate=dpr[depth_offset + block_idx * 2],
-                        channel_drop_path_rate=dpr[depth_offset + block_idx * 2 + 1],
-                    )
-                    for block_idx in range(depths[stage_idx])
-                ]
-            )
-            blocks.append(stage_blocks)
-            depth_offset += depths[stage_idx] * 2
-
-        self.convs = nn.ModuleList(convs)
-        self.blocks = nn.ModuleList(blocks)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Args: x (B, 3, H, W). Returns: (B, C_last, H', W') NCHW feature map."""
-        for conv, block_list in zip(self.convs, self.blocks):
-            x = conv(x)
-            for block in block_list:
-                x = block(x)
-        return x
-
-
 class Florence2VisionLearnedAbsolutePositionEmbedding2D(nn.Module):
     """2D learned absolute position embedding (NCHW interface)."""
 
@@ -440,20 +98,16 @@ class Florence2VisionLearnedAbsolutePositionEmbedding2D(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, C, H, W) — returns positional embeddings of same shape."""
         height, width = x.shape[-2:]
-        x_emb = self.column_embeddings(
-            torch.arange(width, device=x.device)
-        )  # (W, C//2)
-        y_emb = self.row_embeddings(torch.arange(height, device=x.device))  # (H, C//2)
+        x_emb = self.column_embeddings(torch.arange(width, device=x.device))
+        y_emb = self.row_embeddings(torch.arange(height, device=x.device))
         pos = torch.cat(
             [
                 x_emb.unsqueeze(0).expand(height, -1, -1),
                 y_emb.unsqueeze(1).expand(-1, width, -1),
             ],
             dim=-1,
-        )  # (H, W, C)
-        return (
-            pos.permute(2, 0, 1).unsqueeze(0).expand(x.shape[0], -1, -1, -1)
-        )  # (B, C, H, W)
+        )
+        return pos.permute(2, 0, 1).unsqueeze(0).expand(x.shape[0], -1, -1, -1)
 
 
 class Florence2VisionPositionalEmbeddingCosine1D(nn.Module):
@@ -475,7 +129,7 @@ class Florence2VisionPositionalEmbeddingCosine1D(nn.Module):
         """seq_embeds: (B, T, C) — returns (T, C) positional embeddings."""
         len_seq = seq_embeds.size(1)
         assert len_seq <= self.max_seq_len
-        return self.pos_idx_to_embed[0:len_seq, :]  # (T, C)
+        return self.pos_idx_to_embed[0:len_seq, :]
 
 
 class Florence2MultiModalProjector(nn.Module):
@@ -835,14 +489,12 @@ class Florence2MultiModalProcessor(EncDecMultiModalProcessor[Florence2Processing
             else:
                 # Cache hit: encoder_input_ids not available; fall back.
                 hf_config = self.info.get_hf_config()
-                insertion = (
-                    [hf_config.image_token_id] * self.info.get_num_image_tokens()
-                )
+                insertion = [
+                    hf_config.image_token_id
+                ] * self.info.get_num_image_tokens()
         else:
             hf_config = self.info.get_hf_config()
-            insertion = (
-                [hf_config.image_token_id] * self.info.get_num_image_tokens()
-            )
+            insertion = [hf_config.image_token_id] * self.info.get_num_image_tokens()
 
         return [
             PromptInsertion(
@@ -859,6 +511,14 @@ class Florence2MultiModalProcessor(EncDecMultiModalProcessor[Florence2Processing
     dummy_inputs=Florence2DummyInputsBuilder,
 )
 class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal):
+    hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_prefix={
+            "model.vision_tower.": "vision_tower.",
+            "model.multi_modal_projector.": "multi_modal_projector.",
+            "model.language_model.": "language_model.model.",
+            "lm_head.": "language_model.lm_head.",
+        }
+    )
 
     @classmethod
     def get_placeholder_str(cls, modality: str, i: int) -> str | None:
@@ -1046,25 +706,5 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal):
         return self.language_model.compute_logits(hidden_states)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        def _remap(weights: Iterable[tuple[str, torch.Tensor]]):
-            for name, param in weights:
-                # HF checkpoint layout (Florence2ForConditionalGeneration):
-                #   model.vision_tower.*           -> vision_tower.*
-                #   model.multi_modal_projector.*  -> multi_modal_projector.*
-                #   model.language_model.*         -> language_model.model.*
-                #       (HF uses BartModel directly; our wrapper adds .model)
-                #   lm_head.*                      -> language_model.lm_head.*
-                if name.startswith("model.vision_tower."):
-                    name = name[len("model.") :]
-                elif name.startswith("model.multi_modal_projector."):
-                    name = name[len("model.") :]
-                elif name.startswith("model.language_model."):
-                    name = (
-                        "language_model.model." + name[len("model.language_model.") :]
-                    )
-                elif name.startswith("lm_head."):
-                    name = "language_model." + name
-                yield name, param
-
         loader = AutoWeightsLoader(self)
-        return loader.load_weights(_remap(weights))
+        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)

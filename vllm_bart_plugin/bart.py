@@ -1343,6 +1343,7 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
                         " like models, where the same shared embedding is "
                         "present multiple times.", name)
                     continue
+                shared_embedding_weight = loaded_weight
 
         loader = AutoWeightsLoader(
             self,

@@ -13,7 +13,8 @@ from torch import nn
 from transformers import BartConfig, BatchFeature, BartTokenizer, PretrainedConfig
 from transformers.utils import logging
 
-from vllm.attention.layer import Attention, AttentionType
+from vllm.model_executor.layers.attention import Attention
+from vllm.v1.attention.backend import AttentionType
 from vllm.model_executor.layers.attention.cross_attention import CrossAttention
 from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
 from vllm.config import CacheConfig, VllmConfig
@@ -53,7 +54,7 @@ from vllm.multimodal.processing import (
     PromptInsertion,
     PromptIndexTargets,
 )
-from vllm.multimodal.profiling import BaseDummyInputsBuilder
+from vllm.multimodal.processing import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 

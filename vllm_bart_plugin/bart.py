@@ -35,8 +35,15 @@ from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import get_act_fn
-from vllm.model_executor.layers.attention.cross_attention import CrossAttention
-from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
+
+try:
+    from vllm.model_executor.layers.attention.cross_attention import CrossAttention
+    from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
+except ImportError:
+    # These were moved after vLLM 0.13; try the legacy path
+    from vllm.attention.layers.cross_attention import CrossAttention
+    from vllm.attention.layers.mm_encoder_attention import MMEncoderAttention
+
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
     QKVParallelLinear,

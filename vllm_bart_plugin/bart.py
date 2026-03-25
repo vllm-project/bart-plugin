@@ -1118,7 +1118,7 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
             )
         ]
 
-    def _get_data_parser(self) -> MultiModalDataParser:
+    def build_data_parser(self) -> MultiModalDataParser:
         return TextDataParser()
 
 

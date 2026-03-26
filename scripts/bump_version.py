@@ -76,7 +76,7 @@ def main():
     )
     args = parser.parse_args()
 
-    root = Path(__file__).parent
+    root = Path(__file__).parent.parent
     files = [root / "setup.py", root / "pyproject.toml"]
 
     # Get current version from pyproject.toml

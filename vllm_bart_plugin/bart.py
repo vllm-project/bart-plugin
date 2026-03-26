@@ -1045,7 +1045,7 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         BART doesn't have a HuggingFace Processor - it only has a tokenizer.
         We tokenize both the prompt (decoder) and encoder text from mm_data.
         """
-        tok_kwargs["add_special_tokens"] = False
+        # tok_kwargs["add_special_tokens"] = False
         from transformers.feature_extraction_utils import BatchFeature
 
         tokenizer = self.info.get_tokenizer()

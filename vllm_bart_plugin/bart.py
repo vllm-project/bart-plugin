@@ -1054,6 +1054,9 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         has_encoder_data = mm_data is not None and "texts" in mm_data
         result = {}
 
+        # vLLM may pass add_special_tokens in tok_kwargs; we set it ourselves
+        tok_kwargs = {k: v for k, v in tok_kwargs.items() if k != "add_special_tokens"}
+        
         if has_encoder_data:
             # Tokenize the encoder text from mm_data
             encoder_texts = mm_data["texts"]

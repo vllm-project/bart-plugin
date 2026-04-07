@@ -30,8 +30,6 @@ from torch import nn
 from transformers import BartConfig
 from transformers.utils import logging
 
-from vllm.model_executor.layers.attention import Attention
-from vllm.v1.attention.backend import AttentionType
 from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions
@@ -39,12 +37,18 @@ from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import get_act_fn
 
 try:
+    from vllm.v1.attention.backend import AttentionType
+    from vllm.model_executor.layers.attention import Attention
     from vllm.model_executor.layers.attention.cross_attention import CrossAttention
     from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
+    from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 except ImportError:
     # These were moved after vLLM 0.13; try the legacy path
+    from vllm.attention.backends.abstract import AttentionType
+    from vllm.attention.layer import Attention
     from vllm.attention.layers.cross_attention import CrossAttention
     from vllm.attention.layers.mm_encoder_attention import MMEncoderAttention
+    from vllm.multimodal.profiling import BaseDummyInputsBuilder
 
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
@@ -87,7 +91,6 @@ from vllm.multimodal.processing import (
     EncDecMultiModalProcessor,
     PromptUpdate,
 )
-from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 
@@ -1121,6 +1124,9 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
     def build_data_parser(self) -> MultiModalDataParser:
         return TextDataParser()
 
+    # Needed for compatibility with v13
+    def _get_data_parser(self) -> MultiModalDataParser:
+        return self.build_data_parser()
 
 @MULTIMODAL_REGISTRY.register_processor(
     BartMultiModalProcessor,

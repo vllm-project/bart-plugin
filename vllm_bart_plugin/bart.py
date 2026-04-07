@@ -36,13 +36,13 @@ from vllm.config.multimodal import BaseDummyOptions
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import get_act_fn
 
+IS_LEGACY=False
 try:
     from vllm.v1.attention.backend import AttentionType
     from vllm.model_executor.layers.attention import Attention
     from vllm.model_executor.layers.attention.cross_attention import CrossAttention
     from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
     from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
-    IS_LEGACY=False
 except ImportError:
     # These were moved after vLLM 0.13; try the legacy path
     from vllm.attention.backends.abstract import AttentionType
@@ -1018,7 +1018,7 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
 
     def __init__(self, *args, **kwargs):
         # HACK: v13 needs to define _get_data_parser, but v16 throws in __init__
-        # if  this class has _get_data_parser as an attribute, so for now,
+        # if this class has _get_data_parser as an attribute, so for now,
         # we conditionally ist based on which import path was taken, since
         # those are also changes that were needed for v13.
         if IS_LEGACY:

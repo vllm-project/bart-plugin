@@ -42,6 +42,7 @@ try:
     from vllm.model_executor.layers.attention.cross_attention import CrossAttention
     from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
     from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
+    IS_LEGACY=False
 except ImportError:
     # These were moved after vLLM 0.13; try the legacy path
     from vllm.attention.backends.abstract import AttentionType
@@ -49,6 +50,7 @@ except ImportError:
     from vllm.attention.layers.cross_attention import CrossAttention
     from vllm.attention.layers.mm_encoder_attention import MMEncoderAttention
     from vllm.multimodal.profiling import BaseDummyInputsBuilder
+    IS_LEGACY=True
 
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
@@ -1014,6 +1016,15 @@ class TextDataParser(MultiModalDataParser):
 class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
     """Multimodal processor for BART encoder-decoder models."""
 
+    def __init__(self, *args, **kwargs):
+        # HACK: v13 needs to define _get_data_parser, but v16 throws in __init__
+        # if  this class has _get_data_parser as an attribute, so for now,
+        # we conditionally ist based on which import path was taken, since
+        # those are also changes that were needed for v13.
+        if IS_LEGACY:
+            self._get_data_parser = self.build_data_parser
+        super().__init__(*args, **kwargs)
+
     def create_encoder_prompt(
         self,
         prompt: str | list[int],
@@ -1124,9 +1135,6 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
     def build_data_parser(self) -> MultiModalDataParser:
         return TextDataParser()
 
-    # Needed for compatibility with v13
-    def _get_data_parser(self) -> MultiModalDataParser:
-        return self.build_data_parser()
 
 @MULTIMODAL_REGISTRY.register_processor(
     BartMultiModalProcessor,

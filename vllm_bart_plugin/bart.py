@@ -30,21 +30,27 @@ from torch import nn
 from transformers import BartConfig
 from transformers.utils import logging
 
-from vllm.model_executor.layers.attention import Attention
-from vllm.v1.attention.backend import AttentionType
 from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import get_act_fn
 
+IS_LEGACY=False
 try:
+    from vllm.v1.attention.backend import AttentionType
+    from vllm.model_executor.layers.attention import Attention
     from vllm.model_executor.layers.attention.cross_attention import CrossAttention
     from vllm.model_executor.layers.attention.mm_encoder_attention import MMEncoderAttention
+    from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 except ImportError:
     # These were moved after vLLM 0.13; try the legacy path
+    from vllm.attention.backends.abstract import AttentionType
+    from vllm.attention.layer import Attention
     from vllm.attention.layers.cross_attention import CrossAttention
     from vllm.attention.layers.mm_encoder_attention import MMEncoderAttention
+    from vllm.multimodal.profiling import BaseDummyInputsBuilder
+    IS_LEGACY=True
 
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
@@ -87,7 +93,6 @@ from vllm.multimodal.processing import (
     EncDecMultiModalProcessor,
     PromptUpdate,
 )
-from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 
@@ -1010,6 +1015,15 @@ class TextDataParser(MultiModalDataParser):
 
 class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
     """Multimodal processor for BART encoder-decoder models."""
+
+    def __init__(self, *args, **kwargs):
+        # HACK: v13 needs to define _get_data_parser, but v16 throws in __init__
+        # if this class has _get_data_parser as an attribute, so for now,
+        # we conditionally ist based on which import path was taken, since
+        # those are also changes that were needed for v13.
+        if IS_LEGACY:
+            self._get_data_parser = self.build_data_parser
+        super().__init__(*args, **kwargs)
 
     def create_encoder_prompt(
         self,

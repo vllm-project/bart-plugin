@@ -4,14 +4,14 @@ from setuptools import find_packages, setup
 
 setup(
     name="vllm-bart-plugin",
-    version="0.3.2",
+    version="0.3.3",
     description="BART model plugin for vLLM",
     author="Nicolò Lucchesi",
     author_email="nick.lucche@redhat.com",
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[
-        "vllm>=0.14.0,<=0.16",
+        "vllm>=0.13.0,<=0.18",
         "torch>=2.9.0",
         "transformers >= 4.56.0, < 5",
     ],

@@ -996,7 +996,10 @@ class TextDataParser(MultiModalDataParser):
         if data is None:
             return TextProcessorItems(None)
 
-        if self._is_empty(data):
+        # _is_empty was removed in vLLM >=0.18; handle emptiness inline
+        if isinstance(data, str) and not data:
+            return None
+        if isinstance(data, list) and len(data) == 0:
             return None
 
         # Text data should be a string or list of strings
@@ -1030,15 +1033,11 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         prompt: str | list[int],
         mm_data: MultiModalDataDict,
     ) -> str | list[int]:
-        if not prompt:
-            return [0]
-        tokenizer = self.info.get_tokenizer()
-        tokens = tokenizer(
-            prompt,
-            add_special_tokens=False,
-            return_tensors="pt",
-        )["input_ids"].flatten()
-        return tokens.tolist()
+        # In vLLM >=0.18, `prompt` here is the DECODER prompt text, not the
+        # encoder text. The encoder content lives in mm_data ("text" key).
+        # Always return [0] as a single placeholder token; _get_prompt_updates
+        # will replace it with the correct number of encoder token slots.
+        return [0]
 
     def create_decoder_prompt(
         self,
@@ -1079,14 +1078,20 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
             )
             result["encoder_input_ids"] = encoder_tokenized["input_ids"]
 
-        # Always tokenize the prompt (for decoder or as dummy)
-        # This will be popped by the base class
-        prompt_tokenized = tokenizer(
-            prompt if prompt else "",
-            return_tensors="pt",
-            **tok_kwargs,
-        )
-        result["input_ids"] = prompt_tokenized["input_ids"]
+        # Always produce input_ids for the decoder prompt.
+        # In vLLM >=0.18 the rendering pipeline may call _call_hf_processor
+        # with an already-tokenized prompt (a list of ints) instead of a str.
+        # Handle both cases.
+        import torch as _torch
+        if isinstance(prompt, (list, tuple)) and len(prompt) > 0 and isinstance(prompt[0], int):
+            result["input_ids"] = _torch.tensor([prompt])
+        else:
+            prompt_tokenized = tokenizer(
+                prompt if prompt else "",
+                return_tensors="pt",
+                **tok_kwargs,
+            )
+            result["input_ids"] = prompt_tokenized["input_ids"]
 
         return BatchFeature(result)
 

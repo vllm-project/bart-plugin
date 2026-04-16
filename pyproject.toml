@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vllm-bart-plugin"
 version = "0.3.3"
-description = "BART model plugin for vLLM"
+description = "BART, Florence-2, and NLLB/M2M-100 (translation) model plugin for vLLM"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "Nicolò Lucchesi", email = "nick.lucche@redhat.com"}
 ]
-keywords = ["vllm", "bart", "language-model", "inference", "plugin"]
+keywords = ["vllm", "bart", "nllb", "m2m100", "translation", "language-model", "inference", "plugin"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

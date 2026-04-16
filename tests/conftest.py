@@ -10,6 +10,20 @@ def cuda_available():
     return torch.cuda.is_available()
 
 
+@pytest.fixture
+def vllm_config_ctx():
+    """Context manager that sets a minimal vLLM config.
+
+    Required for tests that instantiate vLLM attention layers directly
+    (Attention, MMEncoderAttention, CrossAttention all call
+    get_current_vllm_config() during __init__).
+    """
+    from vllm.config import VllmConfig, set_current_vllm_config
+    vllm_config = VllmConfig()
+    with set_current_vllm_config(vllm_config):
+        yield vllm_config
+
+
 @pytest.fixture(scope="session")
 def device():
     """Get the device to use for tests."""

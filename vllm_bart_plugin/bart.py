@@ -1082,9 +1082,8 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         # In vLLM >=0.18 the rendering pipeline may call _call_hf_processor
         # with an already-tokenized prompt (a list of ints) instead of a str.
         # Handle both cases.
-        import torch as _torch
         if isinstance(prompt, (list, tuple)) and len(prompt) > 0 and isinstance(prompt[0], int):
-            result["input_ids"] = _torch.tensor([prompt])
+            result["input_ids"] = torch.tensor([prompt])
         else:
             prompt_tokenized = tokenizer(
                 prompt if prompt else "",

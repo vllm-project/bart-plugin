@@ -11,19 +11,23 @@ def stop_sign_image():
 
     return ImageAsset("stop_sign").pil_image.convert("RGB")
 
+@pytest.fixture()
+def florence2_llm():
+    from vllm import LLM
+
+    return LLM(
+        model=MODEL_NAME,
+        enforce_eager=True,
+        gpu_memory_utilization=0.5,
+        mm_processor_cache_gb=0,
+    )
 
 @pytest.mark.slow
 class TestFlorence2GreedyDecoding:
     @pytest.mark.parametrize("prompt", ["<DETAILED_CAPTION>", "<OD>"])
-    def test_greedy_decoding_matches(self, stop_sign_image, prompt):
-        from vllm import LLM, SamplingParams
+    def test_greedy_decoding_matches(self, florence2_llm, stop_sign_image, prompt):
+        from vllm import SamplingParams
 
-        florence2_llm = LLM(
-            model=MODEL_NAME,
-            enforce_eager=True,
-            gpu_memory_utilization=0.5,
-            mm_processor_cache_gb=0,
-        )
         params = SamplingParams(
             temperature=0.0, max_tokens=256, skip_special_tokens=False, seed=0
         )

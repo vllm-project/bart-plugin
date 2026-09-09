@@ -12,14 +12,11 @@ from vllm.assets.image import ImageAsset
 
 def main():
     """Run Florence-2 model examples."""
-    model_name = "microsoft/Florence-2-large"
-    tokenizer_name = "Isotr0py/Florence-2-tokenizer"
+    model_name = "florence-community/Florence-2-base-ft"
 
     llm = LLM(
         model=model_name,
-        tokenizer=tokenizer_name,
         mm_processor_cache_gb=0,
-        trust_remote_code=True,
         enforce_eager=True,
     )
     params = SamplingParams(
@@ -46,17 +43,23 @@ def main():
             # },
             {  # NOTE Explicit encoder/decoder prompt
                 "encoder_prompt": {
-                    "prompt": "<OD>",
+                    "prompt": "<DETAILED_CAPTION>",
                     "multi_modal_data": {"image": ImageAsset("stop_sign").pil_image},
                 },
-                "decoder_prompt": "",
+                "decoder_prompt": None,
+            },
+            {  # NOTE implicit prompt with task token
+                "prompt": "<OD>",
+                # "multi_modal_data": {"image": ImageAsset("stop_sign").pil_image},
             },
         ],
         sampling_params=params,
     )
     for o in outputs:
-        generated_text = o.outputs[0].text
-        print("output:", generated_text)
+        print("output text      :", o.outputs[0].text)
+        print("output token_ids :", o.outputs[0].token_ids)
+        print("input token_ids :", o.prompt_token_ids)
+        print("input token_ids :", o)
 
 
 if __name__ == "__main__":

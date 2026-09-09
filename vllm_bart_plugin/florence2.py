@@ -7,7 +7,6 @@ from typing import Literal, TypedDict
 import torch
 from torch import nn
 from transformers import (
-    BartTokenizer,
     BatchFeature,
     Florence2Config,
     Florence2Processor,
@@ -206,7 +205,9 @@ class Florence2LanguageForConditionalGeneration(nn.Module):
 class Florence2ProcessingInfo(BaseProcessingInfo):
 
     def get_hf_config(self) -> Florence2Config:
-        return self.ctx.get_hf_config(Florence2Config)
+        hf_config = self.ctx.get_hf_config(Florence2Config)
+        hf_config.decoder_start_token_id = hf_config.text_config.decoder_start_token_id
+        return hf_config
 
     def get_hf_processor(self, **kwargs: object) -> Florence2Processor:
         return self.ctx.get_hf_processor(Florence2Processor, **kwargs)
@@ -293,8 +294,8 @@ class Florence2MultiModalProcessor(
             tokenizer = hf_processor.tokenizer
             prompt = hf_processor._construct_prompts([prompt])[0]
             processed_outputs = tokenizer(prompt,
-                                            add_special_tokens=True,
-                                            return_tensors="pt")
+                                          add_special_tokens=True,
+                                          return_tensors="pt")
 
         image_token_id = self.info.get_hf_config().image_token_id
         input_ids = processed_outputs["input_ids"]
@@ -378,9 +379,7 @@ class Florence2ForConditionalGeneration(nn.Module, SupportsMultiModal):
             f"only Florence Vision is supported for now. "
             f"Received model type: {config.vision_config.model_type}"
         )
-        # Mark the vision tower + projector so vLLM can skip them when
-        # `--limit-mm-per-prompt image 0`, and mark the LM for
-        # `--mm-encoder-only` / proper weight-init staging.
+
         with self._mark_tower_model(vllm_config, "image"):
             self.vision_tower = Florence2VisionBackbone(config.vision_config)
             self.multi_modal_projector = Florence2MultiModalProjector(config)

@@ -21,10 +21,7 @@ def main():
     )
     params = SamplingParams(
         temperature=0.0,
-        max_tokens=20,
-        # repetition_penalty is needed to prevent <s> repetition
-        # skip_special_tokens=False is needed to present
-        # grounding tokens like <loc_0><loc_1>
+        max_tokens=128,
         skip_special_tokens=False,
     )
     outputs = llm.generate(
@@ -33,8 +30,8 @@ def main():
                 "prompt": "<DETAILED_CAPTION>",
                 "multi_modal_data": {"image": ImageAsset("stop_sign").pil_image},
             },
-            # Not supported without changes to vllm core
-            # {  # Test explicit encoder/decoder prompt
+            # Not supported without multi_modal_data image
+            # {
             #     "encoder_prompt": {
             #         "prompt": "The president of the United States is",
             #     },
@@ -42,23 +39,18 @@ def main():
             # },
             {  # NOTE Explicit encoder/decoder prompt
                 "encoder_prompt": {
-                    "prompt": "<DETAILED_CAPTION>",
+                    "prompt": "<OD>",
                     "multi_modal_data": {"image": ImageAsset("stop_sign").pil_image},
                 },
                 "decoder_prompt": None,
-            },
-            {  # NOTE implicit prompt with task token
-                "prompt": "<OD>",
-                # "multi_modal_data": {"image": ImageAsset("stop_sign").pil_image},
             },
         ],
         sampling_params=params,
     )
     for o in outputs:
         print("output text      :", o.outputs[0].text)
+        print("input token_ids  :", o.prompt_token_ids)
         print("output token_ids :", o.outputs[0].token_ids)
-        print("input token_ids :", o.prompt_token_ids)
-        print("input token_ids :", o)
 
 
 if __name__ == "__main__":

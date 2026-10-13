@@ -12,7 +12,13 @@ from vllm_bart_plugin.config import (
     register_bart_config,
 )
 
+needs_mrv2_allowlist = pytest.mark.skipif(
+    not hasattr(vllm_config_module, "DEFAULT_V2_MODEL_RUNNER_ARCHITECTURES"),
+    reason="vLLM 0.31+ defaults every architecture to MRV2",
+)
 
+
+@needs_mrv2_allowlist
 def test_register_bart_config_marks_architectures_as_default_mrv2(monkeypatch):
     monkeypatch.setattr(
         vllm_config_module,
@@ -46,6 +52,7 @@ def test_register_bart_config_marks_architectures_as_default_mrv2(monkeypatch):
             defaults.cache_clear()
 
 
+@needs_mrv2_allowlist
 def test_register_bart_config_supports_uncached_mrv2_defaults(monkeypatch):
     monkeypatch.setattr(
         vllm_config_module,
@@ -68,6 +75,28 @@ def test_register_bart_config_supports_uncached_mrv2_defaults(monkeypatch):
             assert architecture in (
                 vllm_config_module.DEFAULT_V2_MODEL_RUNNER_ARCHITECTURES
             )
+    finally:
+        for architecture, config_cls in saved.items():
+            if config_cls is None:
+                MODELS_CONFIG_MAP.pop(architecture, None)
+            else:
+                MODELS_CONFIG_MAP[architecture] = config_cls
+
+
+def test_register_bart_config_without_mrv2_allowlist(monkeypatch):
+    monkeypatch.delattr(
+        vllm_config_module, "DEFAULT_V2_MODEL_RUNNER_ARCHITECTURES", raising=False
+    )
+    saved = {
+        architecture: MODELS_CONFIG_MAP.pop(architecture, None)
+        for architecture in BART_ARCHITECTURES
+    }
+    try:
+        register_bart_config()
+
+        for architecture in BART_ARCHITECTURES:
+            assert MODELS_CONFIG_MAP[architecture] is BartMRV2Config
+        assert not hasattr(vllm_config_module, "DEFAULT_V2_MODEL_RUNNER_ARCHITECTURES")
     finally:
         for architecture, config_cls in saved.items():
             if config_cls is None:

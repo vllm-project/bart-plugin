@@ -20,6 +20,7 @@
 # limitations under the License.
 """PyTorch BART model."""
 
+import inspect
 import math
 import os
 from collections.abc import Iterable, Mapping, Sequence
@@ -83,6 +84,10 @@ from vllm.multimodal.processing import (
     PromptUpdate,
 )
 from vllm.multimodal.processing.dummy_inputs import BaseDummyInputsBuilder
+
+_HF_PROCESSOR_TAKES_PROMPT = "prompt" in inspect.signature(
+    EncDecMultiModalProcessor._call_hf_processor
+).parameters
 from vllm.sequence import IntermediateTensors
 from vllm.utils.collection_utils import is_list_of
 from vllm.v1.attention.backend import AttentionType
@@ -1027,59 +1032,81 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         # The decoder prompt is the original prompt
         return prompt
 
-    def _call_hf_processor(
-        self,
-        prompt: str,
-        mm_data: Mapping[str, object],
-        mm_kwargs: Mapping[str, object],
-        tok_kwargs: Mapping[str, object],
-    ):
-        """
-        BART doesn't have a HuggingFace Processor — it only has a tokenizer.
-
-        Produces two sets of token IDs:
-        - ``encoder_input_ids``: tokenized encoder text from ``mm_data["texts"]``
-        - ``input_ids``: tokenized decoder prompt (used by the base class to
-          build ``prompt_token_ids``)
+    def _encoder_input_ids(self, mm_data: Mapping[str, object] | None):
+        """Tokenize the encoder text from ``mm_data["texts"]``, if any.
 
         Encoder text is always tokenized with ``add_special_tokens=False`` to
         stay consistent with ``_get_prompt_updates``.
         """
-        from transformers.feature_extraction_utils import BatchFeature
-
+        if mm_data is None or "texts" not in mm_data:
+            return None
+        encoder_texts = mm_data["texts"]
+        encoder_text = encoder_texts[0] if encoder_texts else ""
         tokenizer = self.info.get_tokenizer()
+        return tokenizer(
+            encoder_text,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )["input_ids"]
 
-        # For BART encoder-decoder: check if we have encoder text data
-        has_encoder_data = mm_data is not None and "texts" in mm_data
-        result = {}
+    if _HF_PROCESSOR_TAKES_PROMPT:
 
-        if has_encoder_data:
-            encoder_texts = mm_data["texts"]
-            encoder_text = encoder_texts[0] if encoder_texts else ""
-            # Tokenize the encoder text from mm_data
-            encoder_tokenized = tokenizer(
-                encoder_text,
-                return_tensors="pt",
-                add_special_tokens=False,
-            )
-            result["encoder_input_ids"] = encoder_tokenized["input_ids"]
-
-        # Always produce input_ids for the decoder prompt.
-        if (
-            isinstance(prompt, (list, tuple))
-            and len(prompt) > 0
-            and isinstance(prompt[0], int)
+        def _call_hf_processor(
+            self,
+            prompt: str,
+            mm_data: Mapping[str, object],
+            mm_kwargs: Mapping[str, object],
+            tok_kwargs: Mapping[str, object],
         ):
-            result["input_ids"] = torch.tensor([prompt])
-        else:
-            prompt_tokenized = tokenizer(
-                prompt if prompt else "",
-                return_tensors="pt",
-                **tok_kwargs,
-            )
-            result["input_ids"] = prompt_tokenized["input_ids"]
+            """
+            BART doesn't have a HuggingFace Processor — it only has a tokenizer.
 
-        return BatchFeature(result)
+            Produces two sets of token IDs:
+            - ``encoder_input_ids``: tokenized encoder text from
+              ``mm_data["texts"]``
+            - ``input_ids``: tokenized decoder prompt (used by the base class
+              to build ``prompt_token_ids``)
+            """
+            from transformers.feature_extraction_utils import BatchFeature
+
+            tokenizer = self.info.get_tokenizer()
+            result = {}
+            encoder_input_ids = self._encoder_input_ids(mm_data)
+            if encoder_input_ids is not None:
+                result["encoder_input_ids"] = encoder_input_ids
+
+            # Always produce input_ids for the decoder prompt.
+            if (
+                isinstance(prompt, (list, tuple))
+                and len(prompt) > 0
+                and isinstance(prompt[0], int)
+            ):
+                result["input_ids"] = torch.tensor([prompt])
+            else:
+                prompt_tokenized = tokenizer(
+                    prompt if prompt else "",
+                    return_tensors="pt",
+                    **tok_kwargs,
+                )
+                result["input_ids"] = prompt_tokenized["input_ids"]
+
+            return BatchFeature(result)
+
+    else:
+
+        def _call_hf_processor(
+            self,
+            hf_data: Mapping[str, object],
+            hf_kwargs: Mapping[str, object],
+        ):
+            """vLLM 0.31+ tokenizes the decoder prompt itself and passes only
+            the multimodal data, so produce just ``encoder_input_ids``."""
+            from transformers.feature_extraction_utils import BatchFeature
+
+            encoder_input_ids = self._encoder_input_ids(hf_data)
+            if encoder_input_ids is None:
+                return BatchFeature({})
+            return BatchFeature({"encoder_input_ids": encoder_input_ids})
 
     def _get_mm_fields_config(
         self,
@@ -1382,14 +1409,15 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
                     continue
                 shared_embedding_weight = loaded_weight
 
-        loader = AutoWeightsLoader(
-            self,
-            skip_prefixes=(["cls.", "pooler."]),
-            skip_substrs=(["final_logits_bias"]),
-        )
-        loaded_params = loader.load_weights(
-            weights_tuple_list, mapper=self.hf_to_vllm_mapper
-        )
+        # Filter after mapping, as AutoWeightsLoader's skip_prefixes and
+        # skip_substrs did; vLLM 0.31 removed those arguments.
+        mapped_weights = [
+            (name, weight)
+            for name, weight in self.hf_to_vllm_mapper.apply(weights_tuple_list)
+            if not name.startswith(("cls.", "pooler."))
+            and "final_logits_bias" not in name
+        ]
+        loaded_params = AutoWeightsLoader(self).load_weights(mapped_weights)
 
         # Load final_logits_bias if present in checkpoint
         if final_logits_bias_weight is not None:

@@ -1,6 +1,9 @@
 """Tests for BART multimodal processor helpers."""
 
+import pytest
 import torch
+
+from vllm_bart_plugin.bart import _HF_PROCESSOR_TAKES_PROMPT
 
 
 def test_text_data_parser_handles_empty_inputs():
@@ -20,7 +23,7 @@ def test_create_encoder_prompt_uses_placeholder_for_decoder_tokens():
     assert processor.create_encoder_prompt([0, 1, 2], {"texts": ["encoder text"]}) == [0]
 
 
-def test_call_hf_processor_accepts_pretokenized_decoder_prompt():
+def _fake_processor():
     from vllm_bart_plugin.bart import BartMultiModalProcessor
 
     class FakeTokenizer:
@@ -35,6 +38,14 @@ def test_call_hf_processor_accepts_pretokenized_decoder_prompt():
 
     processor = BartMultiModalProcessor.__new__(BartMultiModalProcessor)
     processor.info = FakeInfo()
+    return processor
+
+
+@pytest.mark.skipif(
+    not _HF_PROCESSOR_TAKES_PROMPT, reason="vLLM < 0.31 processor interface"
+)
+def test_call_hf_processor_accepts_pretokenized_decoder_prompt():
+    processor = _fake_processor()
 
     out = processor._call_hf_processor(
         [7, 8, 9],
@@ -45,3 +56,15 @@ def test_call_hf_processor_accepts_pretokenized_decoder_prompt():
 
     assert torch.equal(out["encoder_input_ids"], torch.tensor([[11, 12, 13]]))
     assert torch.equal(out["input_ids"], torch.tensor([[7, 8, 9]]))
+
+
+@pytest.mark.skipif(
+    _HF_PROCESSOR_TAKES_PROMPT, reason="vLLM 0.31+ processor interface"
+)
+def test_call_hf_processor_tokenizes_only_encoder_text():
+    processor = _fake_processor()
+
+    out = processor._call_hf_processor({"texts": ["encoder text"]}, {})
+
+    assert torch.equal(out["encoder_input_ids"], torch.tensor([[11, 12, 13]]))
+    assert "input_ids" not in out

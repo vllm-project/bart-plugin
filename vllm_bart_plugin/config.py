@@ -37,7 +37,12 @@ def register_bart_config() -> None:
     for architecture in BART_ARCHITECTURES:
         MODELS_CONFIG_MAP[architecture] = BartMRV2Config
 
-    current = vllm_config_module.DEFAULT_V2_MODEL_RUNNER_ARCHITECTURES
+    current = getattr(
+        vllm_config_module, "DEFAULT_V2_MODEL_RUNNER_ARCHITECTURES", None
+    )
+    if current is None:
+        # vLLM 0.31+ selects MRV2 by default for every architecture.
+        return
     vllm_config_module.DEFAULT_V2_MODEL_RUNNER_ARCHITECTURES = frozenset(
         (*current, *BART_ARCHITECTURES)
     )

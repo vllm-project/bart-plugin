@@ -12,23 +12,16 @@ from vllm.assets.image import ImageAsset
 
 def main():
     """Run Florence-2 model examples."""
-    model_name = "microsoft/Florence-2-large"
-    tokenizer_name = "Isotr0py/Florence-2-tokenizer"
+    model_name = "florence-community/Florence-2-base-ft"
 
     llm = LLM(
         model=model_name,
-        tokenizer=tokenizer_name,
         mm_processor_cache_gb=0,
-        trust_remote_code=True,
         enforce_eager=True,
     )
     params = SamplingParams(
         temperature=0.0,
-        max_tokens=20,
-        # repetition_penalty is needed to prevent <s> repetition
-        repetition_penalty=1.5,
-        # skip_special_tokens=False is needed to present
-        # grounding tokens like <loc_0><loc_1>
+        max_tokens=128,
         skip_special_tokens=False,
     )
     outputs = llm.generate(
@@ -37,8 +30,8 @@ def main():
                 "prompt": "<DETAILED_CAPTION>",
                 "multi_modal_data": {"image": ImageAsset("stop_sign").pil_image},
             },
-            # Not supported without changes to vllm core
-            # {  # Test explicit encoder/decoder prompt
+            # Not supported without multi_modal_data image
+            # {
             #     "encoder_prompt": {
             #         "prompt": "The president of the United States is",
             #     },
@@ -49,14 +42,15 @@ def main():
                     "prompt": "<OD>",
                     "multi_modal_data": {"image": ImageAsset("stop_sign").pil_image},
                 },
-                "decoder_prompt": "",
+                "decoder_prompt": None,
             },
         ],
         sampling_params=params,
     )
     for o in outputs:
-        generated_text = o.outputs[0].text
-        print("output:", generated_text)
+        print("output text      :", o.outputs[0].text)
+        print("input token_ids  :", o.prompt_token_ids)
+        print("output token_ids :", o.outputs[0].token_ids)
 
 
 if __name__ == "__main__":

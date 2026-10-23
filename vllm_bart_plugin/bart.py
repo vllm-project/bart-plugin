@@ -372,7 +372,6 @@ class BartCrossAttention(nn.Module):
                 f" and `num_heads`: {num_heads})."
             )
         self.scaling = self.head_dim**-0.5
-        self.kv_size = self.total_num_kv_heads * self.head_dim
 
         # Q_proj for projecting decoder hidden states
         self.q_proj = ColumnParallelLinear(
@@ -415,6 +414,7 @@ class BartCrossAttention(nn.Module):
             # the KV heads across multiple tensor parallel GPUs.
             assert tp_world_size % self.total_num_kv_heads == 0
         self.num_kv_heads = self.num_heads  # No GQA in bart
+        self.kv_size = self.num_kv_heads * self.head_dim
         self.attn = CrossAttention(
             self.num_heads,
             self.head_dim,

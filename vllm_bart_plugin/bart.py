@@ -21,8 +21,8 @@
 """PyTorch BART model."""
 
 import inspect
+import itertools
 import math
-import os
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -35,6 +35,7 @@ from vllm.config import CacheConfig, VllmConfig
 from vllm.config.lora import LoRAConfig
 from vllm.config.multimodal import BaseDummyOptions
 from vllm.distributed import get_tensor_model_parallel_world_size
+from vllm.exceptions import VLLMValidationError
 from vllm.inputs import MultiModalDataDict
 from vllm.model_executor.layers.attention import Attention
 from vllm.model_executor.layers.attention.cross_attention import CrossAttention
@@ -93,33 +94,6 @@ from vllm.utils.collection_utils import is_list_of
 from vllm.v1.attention.backend import AttentionType
 
 logger = logging.get_logger(__name__)
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    """Parse a boolean-ish environment variable.
-
-    Accepted truthy: 1, true, yes, on
-    Accepted falsy: 0, false, no, off
-    """
-    val = os.getenv(name)
-    if val is None:
-        return default
-    val = val.strip().lower()
-    if val in ("1", "true", "yes", "on"):
-        return True
-    if val in ("0", "false", "no", "off"):
-        return False
-    logger.warning("Unrecognized value for %s=%r; using default=%s", name, val, default)
-    return default
-
-
-def get_bsz_seq_len(input_ids):
-    shp = input_ids.shape
-    ndim = len(shp)
-    if ndim == 1:
-        return 1, input_ids.numel()
-    else:
-        return shp[:2]
 
 
 class BartLearnedPositionalEmbedding(VocabParallelEmbedding):
@@ -243,8 +217,14 @@ class BartEncoderAttention(nn.Module):
             num_kv_heads=self.num_kv_heads,
         )
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Input shape: Batch x Time x Channel"""
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.Tensor | None = None,
+        max_seqlen: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Input shape: Batch x Time x Channel, or packed Time x Channel with
+        ``cu_seqlens``/``max_seqlen`` marking the sequence boundaries."""
 
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
@@ -255,7 +235,7 @@ class BartEncoderAttention(nn.Module):
             k = k.unsqueeze(0)
             v = v.unsqueeze(0)
 
-        attn_output = self.attn(q, k, v)
+        attn_output = self.attn(q, k, v, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen)
 
         output, _ = self.out_proj(attn_output)
         if is_2d:
@@ -489,16 +469,25 @@ class BartEncoderLayer(nn.Module):
 
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.Tensor | None = None,
+        max_seqlen: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         r"""
         Args:
             hidden_states
                 torch.Tensor of *encoder* input embeddings.
+            cu_seqlens, max_seqlen
+                Sequence boundaries when ``hidden_states`` is packed.
         Returns:
             Encoder layer output torch.Tensor
         """
         residual = hidden_states
-        hidden_states = self.self_attn(hidden_states=hidden_states)
+        hidden_states = self.self_attn(
+            hidden_states=hidden_states, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen
+        )
 
         hidden_states = residual + hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
@@ -673,17 +662,20 @@ class BartEncoder(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         inputs_embeds: torch.Tensor | None = None,
+        cu_seqlens: torch.Tensor | None = None,
+        max_seqlen: torch.Tensor | None = None,
     ) -> torch.Tensor:
         r"""
         Args:
             input_ids
                 Indices of *encoder* input sequence tokens in the vocabulary.
-                Padding will be ignored by default should you
-                provide it.
             positions
                 Positions of *encoder* input sequence tokens.
+            cu_seqlens, max_seqlen
+                Sequence boundaries when several sequences are packed into
+                one (Time x Channel) input.
         Returns:
-            Decoder output torch.Tensor
+            Encoder output torch.Tensor
         """
         # retrieve input_ids and inputs_embeds
         if inputs_embeds is None:
@@ -696,7 +688,11 @@ class BartEncoder(nn.Module):
         hidden_states = self.layernorm_embedding(hidden_states)
 
         for encoder_layer in self.layers:
-            hidden_states = encoder_layer(hidden_states=hidden_states)
+            hidden_states = encoder_layer(
+                hidden_states=hidden_states,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+            )
         return hidden_states
 
 
@@ -970,7 +966,8 @@ class BartDummyInputsBuilder(BaseDummyInputsBuilder[BartProcessingInfo]):
 
         # Create dummy encoder text of appropriate length
         # Use simple repeated words for profiling
-        dummy_text = " ".join(["word"] * seq_len)
+        max_len = self.info.get_hf_config().max_position_embeddings
+        dummy_text = " ".join(["word"] * min(seq_len, max_len))
         return {"text": dummy_text}
 
 
@@ -1043,11 +1040,23 @@ class BartMultiModalProcessor(EncDecMultiModalProcessor[BartProcessingInfo]):
         encoder_texts = mm_data["texts"]
         encoder_text = encoder_texts[0] if encoder_texts else ""
         tokenizer = self.info.get_tokenizer()
-        return tokenizer(
+        input_ids = tokenizer(
             encoder_text,
             return_tensors="pt",
             add_special_tokens=False,
         )["input_ids"]
+        # Positions past the learned embedding table have no embedding (a
+        # device-side assert that kills the engine, or silently zeroed under
+        # TP), so reject the request. VLLMValidationError gets a clean 400 from
+        # the server; a bare ValueError also closes the client's connection.
+        max_len = self.info.get_hf_config().max_position_embeddings
+        if input_ids.shape[-1] > max_len:
+            raise VLLMValidationError(
+                f"Encoder input length ({input_ids.shape[-1]}) exceeds the "
+                f"model's maximum encoder length ({max_len}).",
+                parameter="prompt",
+            )
+        return input_ids
 
     if _HF_PROCESSOR_TAKES_PROMPT:
 
@@ -1207,18 +1216,6 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
         self.logits_processor = LogitsProcessor(
             self.unpadded_vocab_size, config.vocab_size
         )
-        # Optional optimization: run the encoder once over a padded batch of
-        # encoder_input_ids (instead of N sequential encoder forwards).
-        # Default is OFF to keep behavior stable unless explicitly enabled.
-        self._encoder_max_seq_padding = _env_flag(
-            "VLLM_BART_ENCODER_MAX_SEQ_PADDING", default=False
-        )
-        self._pad_id = getattr(self.config, "pad_token_id", None)
-        if self._encoder_max_seq_padding and self._pad_id is None:
-            logger.warning(
-                "Pad token id is not set; disabling VLLM_BART_ENCODER_MAX_SEQ_PADDING."
-            )
-            self._encoder_max_seq_padding = False
 
     def get_language_model(self) -> nn.Module:
         return self.model.decoder
@@ -1232,116 +1229,61 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
         return self.model.decoder.embed_tokens(input_ids)
 
     def embed_multimodal(self, **kwargs) -> MultiModalEmbeddings:
-        encoder_input_ids_list = self._parse_and_validate_encoder_input(**kwargs)
-
-        if not encoder_input_ids_list:
+        encoder_input_ids = self._parse_and_validate_encoder_input(**kwargs)
+        if not encoder_input_ids:
             raise ValueError(
-                "encoder_input_ids_list is empty - this should not happen. "
+                "encoder_input_ids is empty - this should not happen. "
                 "Check that multimodal data is being passed correctly."
             )
 
-        # Process each unique encoder input once and return a list of outputs.
-        # Duplicate inputs (e.g. beams sharing a prompt) alias the same output
-        # tensor, which is safe as long as consumers only read it.
-        if not self._encoder_max_seq_padding:
-            encoder_outputs: list[torch.Tensor] = []
-            cached_outputs: dict[tuple[int, ...], torch.Tensor] = {}
-            for encoder_input_ids in encoder_input_ids_list:
-                cache_key = tuple(encoder_input_ids.reshape(-1).tolist())
-                encoder_output = cached_outputs.get(cache_key)
-                if encoder_output is not None:
-                    encoder_outputs.append(encoder_output)
-                    continue
+        # Beam children carry copies of their parent's encoder input, so encode
+        # each distinct input once. Duplicates alias the same output tensor,
+        # which is safe because consumers only read it.
+        host_ids = torch.cat(encoder_input_ids).tolist()
+        unique_index: dict[tuple[int, ...], int] = {}
+        unique_ids: list[torch.Tensor] = []
+        item_to_unique: list[int] = []
+        offset = 0
+        for ids in encoder_input_ids:
+            key = tuple(host_ids[offset : offset + len(ids)])
+            offset += len(ids)
+            idx = unique_index.setdefault(key, len(unique_ids))
+            if idx == len(unique_ids):
+                unique_ids.append(ids)
+            item_to_unique.append(idx)
 
-                encoder_positions = torch.arange(
-                    encoder_input_ids.size(-1),
-                    dtype=torch.long,
-                    device=encoder_input_ids.device,
-                )
-
-                encoder_output = self.model.encoder(
-                    input_ids=encoder_input_ids.squeeze(0),
-                    positions=encoder_positions,
-                )
-                cached_outputs[cache_key] = encoder_output
-                encoder_outputs.append(encoder_output)
-        else:
-            # NOTE (NickLucche): Basic encoder batching optimization: BART input sequences
-            # can have different lengths. Due to computational load of encoder being very
-            # low here, we batch all sequences to run a single forward by max_seq padding.
-            lengths = [t.numel() for t in encoder_input_ids_list]
-            max_len = max(lengths) if lengths else 0
-            assert max_len > 0, "Empty encoder_input_ids encountered."
-
-            same_len = all(l == max_len for l in lengths)
-            if len(encoder_input_ids_list) == 1:
-                batch_encoder_input_ids = encoder_input_ids_list[0]
-            elif same_len:
-                # [1xD]xN =>NxD
-                batch_encoder_input_ids = torch.cat(encoder_input_ids_list, dim=0)
-            else:
-                batch_encoder_input_ids = torch.full(
-                    (len(encoder_input_ids_list), max_len),
-                    fill_value=self._pad_id,
-                    dtype=encoder_input_ids_list[0].dtype,
-                    device=encoder_input_ids_list[0].device,
-                )
-                for i, t in enumerate(encoder_input_ids_list):
-                    batch_encoder_input_ids[i, : t.numel()] = t.squeeze()
-
-            # Create (B, T) positions: 0..T-1 for each item.
-            batch_encoder_positions = (
-                torch.arange(
-                    max_len,
-                    dtype=torch.long,
-                    device=batch_encoder_input_ids.device,
-                )
-                .unsqueeze(0)
-                .expand(batch_encoder_input_ids.size(0), -1)
-            )
-
-            # Run encoder once on the batch.
-            batch_encoder_output = self.model.encoder(
-                input_ids=batch_encoder_input_ids,
-                positions=batch_encoder_positions,
-            )
-
-            # Split back into list[(T, H)] to match expected downstream format.
-            # If we had to pad, slice back to the original lengths per item.
-            encoder_outputs: list[torch.Tensor] = batch_encoder_output.unbind(dim=0)
-            if not same_len:
-                encoder_outputs = [
-                    out[:l] for out, l in zip(encoder_outputs, lengths, strict=False)
-                ]
-        return encoder_outputs
+        # Pack all distinct inputs into one sequence and run the encoder once,
+        # with varlen attention keeping each input within its own segment.
+        lengths = [len(ids) for ids in unique_ids]
+        device = unique_ids[0].device
+        cu_seqlens = torch.tensor(
+            [0, *itertools.accumulate(lengths)], dtype=torch.int32
+        ).to(device, non_blocking=True)
+        positions = torch.cat([torch.arange(n) for n in lengths]).to(
+            device, non_blocking=True
+        )
+        # Kept on the CPU: the attention wrappers read it with .item().
+        max_seqlen = torch.tensor(max(lengths), dtype=torch.int32)
+        packed = self.model.encoder(
+            input_ids=torch.cat(unique_ids),
+            positions=positions,
+            cu_seqlens=cu_seqlens,
+            max_seqlen=max_seqlen,
+        )
+        unique_outputs = packed.split(lengths)
+        return [unique_outputs[i] for i in item_to_unique]
 
     def _parse_and_validate_encoder_input(self, **kwargs: object) -> list[torch.Tensor]:
+        """Return the encoder input ids as a list of 1-D tensors, one per item."""
         encoder_input_ids = kwargs.get("encoder_input_ids", kwargs.get("input_ids"))
-
         if encoder_input_ids is None:
             return []
-
         if not isinstance(encoder_input_ids, (torch.Tensor, list)):
             raise ValueError(
                 "Incorrect type of encoder input_ids. "
                 f"Got type: {type(encoder_input_ids)}"
             )
-
-        # Return as a list of tensors (one per item in the batch)
-        if isinstance(encoder_input_ids, list):
-            # Already a list - ensure each item is valid
-            result = []
-            for item in encoder_input_ids:
-                if isinstance(item, torch.Tensor):
-                    if item.dim() == 0:
-                        item = item.unsqueeze(0)
-                    result.append(item)
-                else:
-                    result.append(item)
-            return result
-        else:
-            # [1xD]xN times
-            return encoder_input_ids.unsqueeze(1).unbind(dim=0)
+        return [ids.reshape(-1) for ids in encoder_input_ids]
 
     def forward(
         self,
@@ -1350,7 +1292,6 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
         encoder_outputs: list[torch.Tensor] | None = None,
-        # num_encoder_outputs: int | None = None,
         **kwargs,
     ) -> torch.Tensor:
         r"""
@@ -1359,11 +1300,9 @@ class BartForConditionalGeneration(nn.Module, SupportsQuant, SupportsMultiModal)
                 torch.Tensor of *decoder* input token ids.
             positions
                 torch.Tensor of *decoder* position indices.
-        Keyword Args:
-            encoder_input_ids (optional)
-                torch.Tensor of *encoder* input token ids.
-            encoder_positions (optional)
-                torch.Tensor of *encoder* position indices
+            encoder_outputs
+                Per-request encoder outputs from ``embed_multimodal`` for the
+                requests in this step that need cross-attention K/V.
         Returns:
             Output torch.Tensor
         """

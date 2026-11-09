@@ -25,7 +25,7 @@ class TestModelInitialization:
             return hidden_states
 
         layer.__dict__.update(
-            self_attn=lambda *, hidden_states: torch.zeros_like(hidden_states),
+            self_attn=lambda *, hidden_states, **_: torch.zeros_like(hidden_states),
             self_attn_layer_norm=identity,
             activation_fn=identity,
             fc1=lambda hidden_states: (hidden_states, None),

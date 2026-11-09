@@ -169,16 +169,16 @@ export VLLM_PLUGINS=bart
 export VLLM_PLUGINS=none
 ```
 
-### `VLLM_BART_ENCODER_MAX_SEQ_PADDING`
+### Encoder batching
 
-Enable a small optimization that **batches encoder forwards** by padding all encoder inputs in a batch to the maximum encoder sequence length, running the encoder once, then slicing outputs back to per-item lengths. As performance is highly dependent on input sequence lenght distribution, this feature is disabled by default.
+All encoder inputs scheduled in a step are packed into one sequence and run
+through the encoder in a single forward pass, using variable-length attention so
+each input only attends to itself. Identical inputs (for example beam-search
+children sharing a prompt) are encoded once. There is no padding, so this is
+always enabled.
 
-```bash
-export VLLM_BART_ENCODER_MAX_SEQ_PADDING=1
-```
-
-Notes:
-- Requires `pad_token_id` to be set in the HF config. If it is missing, the plugin will log a warning and keep the optimization disabled.
+Encoder inputs longer than the model's `max_position_embeddings` are rejected
+with a `ValueError` (HTTP 400 when served) instead of crashing the engine.
 
 ### MRV2
 

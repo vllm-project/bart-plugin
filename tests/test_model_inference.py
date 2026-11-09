@@ -3,6 +3,7 @@
 import os
 
 import pytest
+import torch
 from vllm import LLM, SamplingParams
 
 MODEL_NAME = "facebook/bart-large-cnn"
@@ -59,27 +60,25 @@ class TestModelInference:
             assert len(output.outputs) > 0
             assert len(output.outputs[0].text) > 0
 
-    @pytest.mark.skip(reason="TODO for some reason this is still different")
-    def test_batched_encoder_opt_matches_unbatched(self, llm, test_prompts, monkeypatch):
-        """Ensure encoder batching optimization matches baseline outputs."""
+    def test_packed_encoder_matches_per_input(self, llm):
+        """Packing several encoder inputs into one varlen encoder forward must
+        match encoding each input on its own, including duplicate inputs."""
 
-        prompts = (test_prompts * 2)[:4]  # force a batch >=2 (typically 4)
-        params = SamplingParams(temperature=0.0, max_tokens=10, seed=0)
+        def check(model):
+            device = next(model.parameters()).device
+            token_ids = [[0, 100, 200, 2], [0, 5, 6, 7, 8, 9, 10, 2], [0, 100, 200, 2]]
+            inputs = [torch.tensor(ids, device=device) for ids in token_ids]
+            with torch.inference_mode():
+                packed = model.embed_multimodal(encoder_input_ids=inputs)
+                alone = [
+                    model.embed_multimodal(encoder_input_ids=[t])[0] for t in inputs
+                ]
+            assert [p.shape for p in packed] == [a.shape for a in alone]
+            for p, a in zip(packed, alone):
+                torch.testing.assert_close(p, a, rtol=1e-2, atol=1e-2)
+            return True
 
-        def run_with_env(enabled: bool) -> list[str]:
-            model = llm.llm_engine.model_executor.driver_worker.worker.model_runner.model # .runnable if CG is on
-            model._encoder_max_seq_padding = enabled
-            outs = llm.generate(prompts, sampling_params=params)
-            texts = [o.outputs[0].text for o in outs]
-
-            return texts
-
-        baseline = run_with_env(enabled=False)
-        optimized = run_with_env(enabled=True)
-
-        # TODO for some reason this is still different
-        print(baseline, "\n", optimized, "\n")
-        assert baseline == optimized
+        assert all(llm.apply_model(check))
 
     def test_different_sampling_params(self, llm):
         """Test generation with different sampling parameters."""
